@@ -1,5 +1,10 @@
 # Device Research
 
+This document is the evidence record for the **BlackShark V3 Pro** (`0x1532` / `0x101B`). The
+BlackShark V2 Pro (`0x1532` / `0x0555`) speaks a different transport and framing, and has its own
+record: [`device-research-blackshark-v2-pro.md`](device-research-blackshark-v2-pro.md). Nothing in
+one document is evidence for the other device.
+
 ## Verified Hardware Baseline
 
 Measured on our own hardware with `HidP_GetCaps` and `HidP_GetValueCaps` (development

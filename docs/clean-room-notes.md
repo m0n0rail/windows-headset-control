@@ -48,6 +48,21 @@ comparison. The reference material above remains consulted for the narrow purpos
 recorded, and for nothing else. Nobody should later "check parity" without recording that
 consultation here first.
 
+## BlackShark V2 Pro (`0x0555`) research (2026-11-10)
+
+The V2 Pro protocol was established only by capturing Razer Synapse driving the contributor's own
+hardware (USBPcap and TShark; see
+[`device-research-blackshark-v2-pro.md`](device-research-blackshark-v2-pro.md)). **No new reference
+material was consulted.** No third-party source, command table, documentation or feature list for
+this device was read, before or during the work. The reference listed above was not re-opened for it.
+
+Two kinds of overlap with the V3 Pro are recorded in the research document, and neither was used as
+evidence:
+
+- Parameter numbers that coincide (`0x19`/`0x99`, `0x98` before `0x99`, `0x20`, `0x21`, `0x55`). Each was
+  confirmed on the V2 Pro by its own isolated session before being named.
+- The role byte convention (`01` reply, `02` event). Confirmed on this device by a power-off event.
+
 ## Independence affirmation
 
 All code in `crates/` was written from the specification in
