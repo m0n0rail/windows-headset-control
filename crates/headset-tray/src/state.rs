@@ -5,7 +5,8 @@
 //! That is the whole point of the device-is-source-of-truth rule: a value we
 //! have not read, or that the device refused, must not render as a number.
 
-use headset_protocol::{NoiseControl, Param, ParamFrame};
+use headset_protocol::v3pro::noise::NoiseControl;
+use headset_protocol::{Codec, Param, ParamFrame};
 
 /// The refusal byte. A named parameter answering with it means "unavailable",
 /// not the value 255.
@@ -114,11 +115,13 @@ impl HeadsetState {
     /// Folds one decoded frame into the state.
     ///
     /// Applies to responses and events alike: both carry the same parameter and
-    /// payload, and the tray does not care which prompted the update.
-    pub fn apply(&mut self, frame: &ParamFrame) {
+    /// payload, and the tray does not care which prompted the update. `codec`
+    /// is the protocol of the device the frame came from, which is what says
+    /// which setting its identifier stands for.
+    pub fn apply(&mut self, codec: &dyn Codec, frame: &ParamFrame) {
         let value = frame.value().filter(|v| *v != REFUSED);
-        match frame.param {
-            id if id == Param::LinkState.id() => {
+        match codec.param_for(frame.param) {
+            Some(Param::LinkState) => {
                 self.connected = Some(frame.payload.first() == Some(&0x01));
                 // A dropped link invalidates everything proxied through it.
                 // Leaving stale numbers on screen would be worse than a gap.
@@ -130,18 +133,18 @@ impl HeadsetState {
                     self.mic_mute_hardware = None;
                 }
             }
-            id if id == Param::Battery.id() => self.battery = value,
-            id if id == Param::Sidetone.id() => self.sidetone = value,
-            id if id == Param::GameChatBalance.id() => self.game_chat = value,
-            id if id == Param::MicMute.id() => self.mic_mute_hardware = value.map(|v| v != 0),
+            Some(Param::Battery) => self.battery = value,
+            Some(Param::Sidetone) => self.sidetone = value,
+            Some(Param::GameChatBalance) => self.game_chat = value,
+            Some(Param::MicMute) => self.mic_mute_hardware = value.map(|v| v != 0),
             // Both bytes or nothing: a refusal is one byte and decodes to
             // `None`, which is the same "unknown" every other field uses.
-            id if id == Param::NoiseCancellation.id() => {
+            Some(Param::NoiseCancellation) => {
                 self.noise = NoiseControl::from_payload(&frame.payload)
             }
             // Parameters with no established meaning are ignored rather than
             // guessed at. The tray shows only what the research record supports.
-            _ => {}
+            Some(Param::SliderFunction) | None => {}
         }
     }
 
@@ -171,6 +174,7 @@ impl HeadsetState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use headset_protocol::v3pro::{param_id, V3_PRO};
     use headset_protocol::Role;
 
     fn frame(param: u8, payload: &[u8]) -> ParamFrame {
@@ -215,16 +219,16 @@ mod tests {
     #[test]
     fn a_refused_value_leaves_the_field_unknown() {
         let mut s = HeadsetState::default();
-        s.apply(&frame(Param::Battery.id(), &[0xFF]));
+        s.apply(&V3_PRO, &frame(param_id(Param::Battery), &[0xFF]));
         assert_eq!(s.battery, None, "255 is not a battery level");
     }
 
     #[test]
     fn losing_the_link_clears_proxied_values() {
         let mut s = HeadsetState::default();
-        s.apply(&frame(Param::Battery.id(), &[52]));
-        s.apply(&frame(Param::Sidetone.id(), &[7]));
-        s.apply(&frame(Param::LinkState.id(), &[0x00, 0x00]));
+        s.apply(&V3_PRO, &frame(param_id(Param::Battery), &[52]));
+        s.apply(&V3_PRO, &frame(param_id(Param::Sidetone), &[7]));
+        s.apply(&V3_PRO, &frame(param_id(Param::LinkState), &[0x00, 0x00]));
         assert_eq!(s.connected, Some(false));
         assert_eq!(s.battery, None, "a stale battery reading must not persist");
         assert_eq!(s.sidetone, None);
@@ -233,7 +237,7 @@ mod tests {
     #[test]
     fn regaining_the_link_does_not_invent_values() {
         let mut s = HeadsetState::default();
-        s.apply(&frame(Param::LinkState.id(), &[0x01, 0x00]));
+        s.apply(&V3_PRO, &frame(param_id(Param::LinkState), &[0x01, 0x00]));
         assert_eq!(s.connected, Some(true));
         assert_eq!(s.battery, None, "connected is not the same as known");
     }
@@ -265,7 +269,7 @@ mod tests {
             battery: Some(52),
             ..Default::default()
         };
-        s.apply(&frame(Param::LinkState.id(), &[0x00, 0x00]));
+        s.apply(&V3_PRO, &frame(param_id(Param::LinkState), &[0x00, 0x00]));
         let t = s.tooltip();
         assert!(t.contains("off"), "{t}");
         assert!(!t.contains("52"), "{t}");
@@ -330,9 +334,12 @@ mod tests {
 
     #[test]
     fn the_noise_state_comes_from_both_payload_bytes() {
-        use headset_protocol::NoiseMode;
+        use headset_protocol::v3pro::noise::NoiseMode;
         let mut s = HeadsetState::default();
-        s.apply(&frame(Param::NoiseCancellation.id(), &[0x01, 0x03]));
+        s.apply(
+            &V3_PRO,
+            &frame(param_id(Param::NoiseCancellation), &[0x01, 0x03]),
+        );
         let n = s.noise.expect("a two-byte payload is a noise state");
         assert_eq!(n.mode, NoiseMode::Anc);
         assert_eq!(n.anc_level, 3);
@@ -341,24 +348,33 @@ mod tests {
     #[test]
     fn a_refused_noise_read_leaves_it_unknown() {
         let mut s = HeadsetState::default();
-        s.apply(&frame(Param::NoiseCancellation.id(), &[0x01, 0x03]));
-        s.apply(&frame(Param::NoiseCancellation.id(), &[0xFF]));
+        s.apply(
+            &V3_PRO,
+            &frame(param_id(Param::NoiseCancellation), &[0x01, 0x03]),
+        );
+        s.apply(&V3_PRO, &frame(param_id(Param::NoiseCancellation), &[0xFF]));
         assert_eq!(s.noise, None, "a refusal is not a noise state");
     }
 
     #[test]
     fn losing_the_link_clears_the_noise_state_too() {
         let mut s = HeadsetState::default();
-        s.apply(&frame(Param::NoiseCancellation.id(), &[0x01, 0x04]));
-        s.apply(&frame(Param::LinkState.id(), &[0x00, 0x00]));
+        s.apply(
+            &V3_PRO,
+            &frame(param_id(Param::NoiseCancellation), &[0x01, 0x04]),
+        );
+        s.apply(&V3_PRO, &frame(param_id(Param::LinkState), &[0x00, 0x00]));
         assert_eq!(s.noise, None, "a stale mode must not persist");
     }
 
     #[test]
     fn a_pending_noise_write_is_shown_until_the_device_answers() {
-        use headset_protocol::{NoiseControl, NoiseMode};
+        use headset_protocol::v3pro::noise::{NoiseControl, NoiseMode};
         let mut s = HeadsetState::default();
-        s.apply(&frame(Param::NoiseCancellation.id(), &[0x01, 0x03]));
+        s.apply(
+            &V3_PRO,
+            &frame(param_id(Param::NoiseCancellation), &[0x01, 0x03]),
+        );
 
         let asked = NoiseControl {
             mode: NoiseMode::Ambient,
@@ -380,13 +396,16 @@ mod tests {
     #[test]
     fn no_pending_write_leaves_the_device_state_alone() {
         let mut s = HeadsetState::default();
-        s.apply(&frame(Param::NoiseCancellation.id(), &[0x01, 0x03]));
+        s.apply(
+            &V3_PRO,
+            &frame(param_id(Param::NoiseCancellation), &[0x01, 0x03]),
+        );
         assert_eq!(s.with_pending_noise(None), s);
     }
 
     #[test]
     fn a_pending_write_does_not_invent_a_state_while_disconnected() {
-        use headset_protocol::{NoiseControl, NoiseMode};
+        use headset_protocol::v3pro::noise::{NoiseControl, NoiseMode};
         // Nothing was ever read, so there is nothing to preview against. The
         // panel must keep showing "--" rather than a value the device never
         // reported and may refuse.
@@ -401,7 +420,7 @@ mod tests {
     #[test]
     fn unidentified_parameters_are_ignored() {
         let mut s = HeadsetState::default();
-        s.apply(&frame(0x2C, &[0x0F]));
+        s.apply(&V3_PRO, &frame(0x2C, &[0x0F]));
         assert_eq!(s, HeadsetState::default());
     }
 }

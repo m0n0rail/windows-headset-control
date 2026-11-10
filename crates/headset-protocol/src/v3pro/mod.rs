@@ -1,4 +1,4 @@
-//! The parameter-access command family.
+//! The BlackShark V3 Pro's parameter-access command family.
 //!
 //! Every identifier in this module was observed on the wire while the vendor
 //! software drove our own hardware. Nothing here is guessed, and nothing that
@@ -20,8 +20,17 @@
 //! byte  63     reserved
 //! ```
 
+pub mod noise;
+
+use crate::codec::{Codec, Param, ParamFrame, ResultCode, Role};
 use crate::error::ProtocolError;
 use crate::frame::{CONTROL_REPORT_ID, CONTROL_REPORT_LEN};
+
+/// The V3 Pro's protocol, as the [`Codec`] the device layer dispatches through.
+pub struct V3Pro;
+
+/// The one instance device profiles refer to.
+pub static V3_PRO: V3Pro = V3Pro;
 
 /// Byte 2 carried this value on every observed frame in both directions.
 pub const TRANSACTION_ID: u8 = 0x60;
@@ -56,8 +65,8 @@ const STATUS_COMMAND: u8 = 0x00;
 /// Parameters this project may read. Every entry was observed being read by the
 /// vendor software during the headset's connect handshake.
 ///
-/// Identifiers whose meaning is established are named in [`Param`]. The rest are
-/// reachable but deliberately unnamed: see the Unknown bytes policy in
+/// Identifiers whose meaning is established are mapped by [`param_id`]. The
+/// rest are reachable but deliberately unnamed: see the Unknown bytes policy in
 /// `docs/device-research.md`.
 pub const READ_ALLOWLIST: [u8; 17] = [
     0x12, 0x15, 0x16, 0x17, 0x19, 0x20, 0x21, 0x2A, 0x2C, 0x55, 0x5C, 0x5D, 0x5F, 0x60, 0x65, 0x66,
@@ -84,111 +93,55 @@ pub const INDEXED_READS: [u8; 3] = [0x15, 0x60, 0x65];
 /// which is how they were observed.
 pub const DONGLE_LOCAL: [u8; 1] = [0x20];
 
-/// The parameters whose meaning is established by observation.
-///
-/// A variant exists here only where behaviour was observed to change with the
-/// value. Observed-but-unidentified parameters are intentionally absent and are
-/// reached through their raw identifier instead.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Param {
-    LinkState,
-    Battery,
-    Sidetone,
-    GameChatBalance,
-    MicMute,
-    SliderFunction,
-    /// Mode and ANC level together. Two payload bytes, so it is read and
-    /// written through [`crate::noise`] rather than as a single value.
-    NoiseCancellation,
-}
+/// Sidetone writes are preceded by `0x18 = 01`, which is what the vendor
+/// software was observed doing before every level write. Sending the level
+/// alone was never seen on the wire.
+pub const SIDETONE_ENABLE: u8 = 0x18;
 
-impl Param {
-    pub const ALL: [Param; 7] = [
-        Param::LinkState,
-        Param::Battery,
-        Param::Sidetone,
-        Param::GameChatBalance,
-        Param::MicMute,
-        Param::SliderFunction,
-        Param::NoiseCancellation,
-    ];
-
-    pub fn id(self) -> u8 {
-        match self {
-            Param::LinkState => 0x20,
-            Param::Battery => 0x21,
-            Param::Sidetone => 0x19,
-            Param::GameChatBalance => 0x5C,
-            Param::MicMute => 0x55,
-            Param::SliderFunction => 0x6A,
-            Param::NoiseCancellation => 0x12,
-        }
-    }
-
-    /// CLI-facing name. Stable; used in both renderers.
-    pub fn name(self) -> &'static str {
-        match self {
-            Param::LinkState => "link",
-            Param::Battery => "battery",
-            Param::Sidetone => "sidetone",
-            Param::GameChatBalance => "game-chat",
-            Param::MicMute => "mic-mute",
-            Param::SliderFunction => "slider-function",
-            Param::NoiseCancellation => "noise-cancellation",
-        }
-    }
-
-    pub fn from_name(s: &str) -> Option<Param> {
-        Param::ALL.into_iter().find(|p| p.name() == s)
-    }
-
-    /// Inclusive value range, where one was established by observing the
-    /// control clamp at both ends. `None` means the range is not known — the
-    /// value is surfaced without being validated against an invented bound.
-    pub fn range(self) -> Option<(u8, u8)> {
-        match self {
-            Param::Sidetone => Some((0, 15)),
-            Param::GameChatBalance => Some((0, 20)),
-            Param::Battery => Some((0, 100)),
-            Param::MicMute => Some((0, 1)),
-            // Noise cancellation carries two bytes, neither of which is "the"
-            // value this range would bound; `noise::ANC_LEVEL_RANGE` bounds the
-            // level alone.
-            Param::LinkState | Param::SliderFunction | Param::NoiseCancellation => None,
-        }
-    }
-
-    /// Whether a write for this parameter was ever observed. Reading is always
-    /// permitted for a named parameter; writing is not.
-    pub fn is_writable(self) -> bool {
-        WRITE_ALLOWLIST.contains(&self.id())
+/// The V3 Pro's identifier for each named parameter. Every one is mapped: the
+/// vocabulary in [`Param`] was first established on this device.
+pub fn param_id(param: Param) -> u8 {
+    match param {
+        Param::LinkState => 0x20,
+        Param::Battery => 0x21,
+        Param::Sidetone => 0x19,
+        Param::GameChatBalance => 0x5C,
+        Param::MicMute => 0x55,
+        Param::SliderFunction => 0x6A,
+        Param::NoiseCancellation => 0x12,
     }
 }
 
-/// Role selector at byte 11.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Role {
-    Request,
-    Response,
-    Event,
+/// Inclusive value range, where one was established by observing the control
+/// clamp at both ends. `None` means the range is not known — the value is
+/// surfaced without being validated against an invented bound.
+pub fn param_range(param: Param) -> Option<(u8, u8)> {
+    match param {
+        Param::Sidetone => Some((0, 15)),
+        Param::GameChatBalance => Some((0, 20)),
+        Param::Battery => Some((0, 100)),
+        Param::MicMute => Some((0, 1)),
+        // Noise cancellation carries two bytes, neither of which is "the"
+        // value this range would bound; `noise::ANC_LEVEL_RANGE` bounds the
+        // level alone.
+        Param::LinkState | Param::SliderFunction | Param::NoiseCancellation => None,
+    }
 }
 
-impl Role {
-    fn from_byte(b: u8) -> Option<Role> {
-        match b {
-            0x00 => Some(Role::Request),
-            0x01 => Some(Role::Response),
-            0x02 => Some(Role::Event),
-            _ => None,
-        }
+fn role_from_byte(b: u8) -> Option<Role> {
+    match b {
+        0x00 => Some(Role::Request),
+        0x01 => Some(Role::Response),
+        0x02 => Some(Role::Event),
+        _ => None,
     }
+}
 
-    fn to_byte(self) -> u8 {
-        match self {
-            Role::Request => 0x00,
-            Role::Response => 0x01,
-            Role::Event => 0x02,
-        }
+fn role_to_byte(role: Role) -> u8 {
+    match role {
+        Role::Request => 0x00,
+        Role::Response => 0x01,
+        Role::Event => 0x02,
     }
 }
 
@@ -196,24 +149,11 @@ impl Role {
 ///
 /// Only `0x00` and `0xFF` have been observed. Anything else is surfaced as
 /// [`ResultCode::Unknown`] rather than being assumed to mean success.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ResultCode {
-    Ok,
-    Refused,
-    Unknown(u8),
-}
-
-impl ResultCode {
-    pub fn from_byte(b: u8) -> ResultCode {
-        match b {
-            0x00 => ResultCode::Ok,
-            0xFF => ResultCode::Refused,
-            other => ResultCode::Unknown(other),
-        }
-    }
-
-    pub fn is_ok(self) -> bool {
-        matches!(self, ResultCode::Ok)
+pub fn result_code(b: u8) -> ResultCode {
+    match b {
+        0x00 => ResultCode::Ok,
+        0xFF => ResultCode::Refused,
+        other => ResultCode::Unknown(other),
     }
 }
 
@@ -250,7 +190,7 @@ fn encode(
     buf[OFF_COMMAND_ID] = 0x00;
     buf[OFF_ORIGIN] = origin;
     buf[OFF_PARAM] = param_byte;
-    buf[OFF_ROLE] = Role::Request.to_byte();
+    buf[OFF_ROLE] = role_to_byte(Role::Request);
     buf[OFF_PAYLOAD_LEN] = payload.len() as u8;
     buf[OFF_PAYLOAD..OFF_PAYLOAD + payload.len()].copy_from_slice(payload);
     buf[OFF_CHECKSUM] = checksum(&buf);
@@ -301,7 +241,7 @@ pub fn write_payload_len(param: u8) -> usize {
 /// were observed being written with more than a single value byte.
 ///
 /// Rejects a payload of a length never seen for that identifier. The multi-byte
-/// parameters are read-modify-write on the device — see [`crate::noise`] — and
+/// parameters are read-modify-write on the device — see [`noise`] — and
 /// sending a short payload would silently decide the omitted byte.
 pub fn encode_write_payload(
     param: u8,
@@ -319,40 +259,6 @@ pub fn encode_write_payload(
         });
     }
     encode(param | WRITE_BIT, origin_for(param), payload)
-}
-
-/// A parsed response or event.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ParamFrame {
-    /// Bare parameter id, with the write bit stripped.
-    pub param: u8,
-    /// Whether the frame answers a write (bit 7 was set on the wire).
-    pub is_write: bool,
-    pub role: Role,
-    pub payload: Vec<u8>,
-}
-
-impl ParamFrame {
-    /// Value byte for the common single-byte case.
-    pub fn value(&self) -> Option<u8> {
-        match self.payload.len() {
-            1 => Some(self.payload[0]),
-            _ => None,
-        }
-    }
-
-    /// Interprets the payload of a write response as a result code.
-    pub fn result(&self) -> Option<ResultCode> {
-        self.value().map(ResultCode::from_byte)
-    }
-
-    pub fn hex_payload(&self) -> String {
-        self.payload
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<Vec<_>>()
-            .join(" ")
-    }
 }
 
 /// Parses a received 64-byte report.
@@ -401,7 +307,7 @@ pub fn parse(raw: &[u8]) -> Result<Option<ParamFrame>, ProtocolError> {
             implied: payload_len,
         });
     }
-    let Some(role) = Role::from_byte(raw[OFF_ROLE]) else {
+    let Some(role) = role_from_byte(raw[OFF_ROLE]) else {
         return Err(ProtocolError::UnknownRole {
             role: raw[OFF_ROLE],
         });
@@ -413,6 +319,60 @@ pub fn parse(raw: &[u8]) -> Result<Option<ParamFrame>, ProtocolError> {
         role,
         payload: raw[OFF_PAYLOAD..OFF_PAYLOAD + payload_len].to_vec(),
     }))
+}
+
+impl Codec for V3Pro {
+    fn name(&self) -> &'static str {
+        "blackshark-v3-pro"
+    }
+
+    fn id(&self, param: Param) -> Option<u8> {
+        Some(param_id(param))
+    }
+
+    fn range(&self, param: Param) -> Option<(u8, u8)> {
+        param_range(param)
+    }
+
+    fn read_allowlist(&self) -> &'static [u8] {
+        &READ_ALLOWLIST
+    }
+
+    fn write_allowlist(&self) -> &'static [u8] {
+        &WRITE_ALLOWLIST
+    }
+
+    fn indexed_reads(&self) -> &'static [u8] {
+        &INDEXED_READS
+    }
+
+    fn write_payload_len(&self, id: u8) -> usize {
+        write_payload_len(id)
+    }
+
+    fn write_preamble(&self, param: Param) -> Option<(u8, u8)> {
+        match param {
+            Param::Sidetone => Some((SIDETONE_ENABLE, 1)),
+            _ => None,
+        }
+    }
+
+    fn encode_read(&self, id: u8, index: Option<u8>) -> Result<Vec<u8>, ProtocolError> {
+        encode_read(id, index).map(|b| b.to_vec())
+    }
+
+    fn encode_write(&self, id: u8, payload: &[u8]) -> Result<Vec<u8>, ProtocolError> {
+        encode_write_payload(id, payload).map(|b| b.to_vec())
+    }
+
+    fn parse(&self, raw: &[u8]) -> Result<Vec<ParamFrame>, ProtocolError> {
+        // One report carries at most one frame on this device.
+        parse(raw).map(|f| f.into_iter().collect())
+    }
+
+    fn write_result(&self, ack: &ParamFrame) -> Option<ResultCode> {
+        ack.value().map(result_code)
+    }
 }
 
 #[cfg(test)]
@@ -437,7 +397,7 @@ mod tests {
 
     #[test]
     fn read_request_matches_the_captured_bytes() {
-        let buf = encode_read(Param::Battery.id(), None).unwrap();
+        let buf = encode_read(param_id(Param::Battery), None).unwrap();
         assert_eq!(&buf[..8], &CAPTURED_BATTERY_REQUEST);
         assert_eq!(buf[9], 0x80);
         assert_eq!(buf[10], 0x21);
@@ -459,7 +419,7 @@ mod tests {
 
     #[test]
     fn write_sets_the_write_bit_from_the_bare_id() {
-        let buf = encode_write(Param::Sidetone.id(), 0x0F).unwrap();
+        let buf = encode_write(param_id(Param::Sidetone), 0x0F).unwrap();
         assert_eq!(buf[10], 0x99, "0x19 | 0x80");
         assert_eq!(buf[13], 0x0F);
         assert_eq!(buf[6], 5);
@@ -467,13 +427,13 @@ mod tests {
 
     #[test]
     fn game_chat_write_matches_the_captured_command() {
-        let buf = encode_write(Param::GameChatBalance.id(), 0x14).unwrap();
+        let buf = encode_write(param_id(Param::GameChatBalance), 0x14).unwrap();
         assert_eq!(buf[10], 0xDC);
     }
 
     #[test]
     fn link_state_uses_the_dongle_local_origin() {
-        let buf = encode_read(Param::LinkState.id(), None).unwrap();
+        let buf = encode_read(param_id(Param::LinkState), None).unwrap();
         assert_eq!(buf[9], ORIGIN_DEVICE, "0x20 was observed read as 00 20");
     }
 
@@ -498,9 +458,9 @@ mod tests {
     #[test]
     fn a_read_only_parameter_cannot_be_written() {
         // Battery is readable but no write was ever observed.
-        assert!(!Param::Battery.is_writable());
+        assert!(!V3_PRO.is_writable(Param::Battery));
         assert!(matches!(
-            encode_write(Param::Battery.id(), 100),
+            encode_write(param_id(Param::Battery), 100),
             Err(ProtocolError::NotAllowlisted { .. })
         ));
     }
@@ -515,7 +475,7 @@ mod tests {
     #[test]
     fn an_index_on_a_non_indexed_parameter_is_rejected() {
         assert!(matches!(
-            encode_read(Param::Battery.id(), Some(3)),
+            encode_read(param_id(Param::Battery), Some(3)),
             Err(ProtocolError::UnexpectedIndex { param: 0x21 })
         ));
     }
@@ -523,7 +483,7 @@ mod tests {
     #[test]
     fn parses_the_captured_battery_response() {
         let f = parse(&captured_battery_response()).unwrap().unwrap();
-        assert_eq!(f.param, Param::Battery.id());
+        assert_eq!(f.param, param_id(Param::Battery));
         assert_eq!(f.role, Role::Response);
         assert_eq!(f.value(), Some(52));
     }
@@ -545,7 +505,7 @@ mod tests {
         // 0x12 was only ever seen written with both bytes. A single-byte write
         // would leave the other one to whatever the device already held.
         assert_eq!(
-            encode_write(Param::NoiseCancellation.id(), 1),
+            encode_write(param_id(Param::NoiseCancellation), 1),
             Err(ProtocolError::WrongWritePayloadLen {
                 param: 0x12,
                 expected: 2,
@@ -557,7 +517,7 @@ mod tests {
     #[test]
     fn a_one_byte_parameter_cannot_be_written_as_two() {
         assert_eq!(
-            encode_write_payload(Param::Sidetone.id(), &[1, 2]),
+            encode_write_payload(param_id(Param::Sidetone), &[1, 2]),
             Err(ProtocolError::WrongWritePayloadLen {
                 param: 0x19,
                 expected: 1,
@@ -640,9 +600,9 @@ mod tests {
 
     #[test]
     fn result_codes_only_claim_what_was_observed() {
-        assert_eq!(ResultCode::from_byte(0x00), ResultCode::Ok);
-        assert_eq!(ResultCode::from_byte(0xFF), ResultCode::Refused);
-        assert_eq!(ResultCode::from_byte(0x01), ResultCode::Unknown(1));
+        assert_eq!(result_code(0x00), ResultCode::Ok);
+        assert_eq!(result_code(0xFF), ResultCode::Refused);
+        assert_eq!(result_code(0x01), ResultCode::Unknown(1));
         assert!(!ResultCode::Unknown(1).is_ok());
     }
 
@@ -654,7 +614,7 @@ mod tests {
         // fail here, which is the prompt to update both documents.
         let named = READ_ALLOWLIST
             .iter()
-            .filter(|id| Param::ALL.iter().any(|p| p.id() == **id))
+            .filter(|id| Param::ALL.iter().any(|p| param_id(*p) == **id))
             .count();
         let unnamed = READ_ALLOWLIST.len() - named;
         assert_eq!(
@@ -669,7 +629,7 @@ mod tests {
     fn named_parameters_are_all_readable() {
         for p in Param::ALL {
             assert!(
-                READ_ALLOWLIST.contains(&p.id()),
+                READ_ALLOWLIST.contains(&param_id(p)),
                 "{} is named but not readable",
                 p.name()
             );
@@ -681,7 +641,7 @@ mod tests {
     fn named_parameters_are_writable_only_where_a_write_was_observed() {
         let writable: Vec<&str> = Param::ALL
             .into_iter()
-            .filter(|p| p.is_writable())
+            .filter(|p| V3_PRO.is_writable(*p))
             .map(|p| p.name())
             .collect();
         assert_eq!(
@@ -693,5 +653,51 @@ mod tests {
                 "noise-cancellation"
             ]
         );
+    }
+
+    #[test]
+    fn the_codec_encodes_exactly_what_the_free_functions_do() {
+        // The trait is a seam, not a second implementation: going through it
+        // must put the same bytes on the wire as the code it wraps.
+        let id = param_id(Param::Sidetone);
+        assert_eq!(
+            V3_PRO.encode_read(id, None).unwrap(),
+            encode_read(id, None).unwrap().to_vec()
+        );
+        assert_eq!(
+            V3_PRO.encode_write(id, &[7]).unwrap(),
+            encode_write(id, 7).unwrap().to_vec()
+        );
+        assert_eq!(
+            V3_PRO.parse(&captured_battery_response()).unwrap(),
+            vec![parse(&captured_battery_response()).unwrap().unwrap()]
+        );
+    }
+
+    #[test]
+    fn the_codec_maps_every_identifier_back_to_its_name() {
+        for p in Param::ALL {
+            assert_eq!(V3_PRO.param_for(param_id(p)), Some(p));
+        }
+        assert_eq!(V3_PRO.param_for(0x2C), None, "observed but unnamed");
+    }
+
+    #[test]
+    fn a_frame_outside_the_parameter_family_parses_to_nothing() {
+        let mut b = [0u8; CONTROL_REPORT_LEN];
+        b[0] = CONTROL_REPORT_ID;
+        b[2] = TRANSACTION_ID;
+        b[6] = 1;
+        b[8] = 0x84;
+        b[62] = checksum(&b);
+        assert!(V3_PRO.parse(&b).unwrap().is_empty());
+    }
+
+    #[test]
+    fn only_sidetone_carries_the_observed_preamble() {
+        for p in Param::ALL {
+            let expected = (p == Param::Sidetone).then_some((SIDETONE_ENABLE, 1));
+            assert_eq!(V3_PRO.write_preamble(p), expected, "{}", p.name());
+        }
     }
 }

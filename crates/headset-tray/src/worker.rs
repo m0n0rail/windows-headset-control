@@ -13,15 +13,10 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::Duration;
 
 use headset_device::{ControlSession, DeviceError, HidBackend};
-use headset_protocol::{
-    encode_noise_write, encode_read, encode_write, NoiseControl, Param, ResultCode,
-};
+use headset_protocol::v3pro::noise::{noise_write_payload, NoiseControl};
+use headset_protocol::{Codec, Param, ParamFrame, ResultCode};
 
 use crate::state::HeadsetState;
-
-/// Sidetone writes are preceded by `0x18 = 01`, reproducing what the vendor
-/// software was observed doing before every level write.
-const SIDETONE_ENABLE: u8 = 0x18;
 
 /// How long to sit in `listen` between polls. Events arrive on their own, so
 /// this is not a polling interval for values — it is how often the thread wakes
@@ -171,12 +166,16 @@ pub fn run<B: HidBackend, F: Fn(HeadsetState)>(
         match s.listen(LISTEN_SLICE) {
             Ok(events) => {
                 if !events.is_empty() {
+                    let codec = s.codec();
                     for e in &events {
-                        state.apply(e);
+                        state.apply(codec, e);
                     }
                     // A link transition invalidates everything; re-read rather
                     // than wait for individual pushes that may not come.
-                    if events.iter().any(|e| e.param == Param::LinkState.id()) {
+                    if events
+                        .iter()
+                        .any(|e| codec.param_for(e.param) == Some(Param::LinkState))
+                    {
                         since_refresh = FULL_REFRESH;
                     }
                     notify(state.clone());
@@ -203,15 +202,48 @@ fn is_fatal(e: &DeviceError) -> bool {
     )
 }
 
+/// Reads one named parameter into `state`. A parameter the device has no
+/// identifier for is left unknown rather than read under another's id.
 fn read_into(
     s: &mut ControlSession,
     param: Param,
     state: &mut HeadsetState,
 ) -> Result<(), DeviceError> {
-    let req = encode_read(param.id(), None).expect("named parameters are allowlisted");
-    let frame = s.exchange(&req, param.id(), false)?;
-    state.apply(&frame);
+    let codec = s.codec();
+    let Some(id) = codec.id(param) else {
+        return Ok(());
+    };
+    let req = codec
+        .encode_read(id, None)
+        .expect("a codec's named parameters are on its read allowlist");
+    let frame = s.exchange(&req, id, false)?;
+    state.apply(codec, &frame);
     Ok(())
+}
+
+/// Writes one named parameter, preceded by whatever the device was observed
+/// receiving before it, and rejects anything but an acknowledged write.
+fn write_param(s: &mut ControlSession, param: Param, payload: &[u8]) -> Result<(), DeviceError> {
+    let codec = s.codec();
+    let id = codec.id(param).ok_or_else(|| {
+        DeviceError::ProtocolMismatch(format!(
+            "{} has no identifier on the {}",
+            param.name(),
+            s.profile().name
+        ))
+    })?;
+    if let Some((pre_id, pre_value)) = codec.write_preamble(param) {
+        let pre = codec
+            .encode_write(pre_id, &[pre_value])
+            .expect("allowlisted");
+        let ack = s.exchange(&pre, pre_id, true)?;
+        reject_unless_ok(codec, &ack)?;
+    }
+    let req = codec
+        .encode_write(id, payload)
+        .map_err(|e| DeviceError::ProtocolMismatch(e.to_string()))?;
+    let ack = s.exchange(&req, id, true)?;
+    reject_unless_ok(codec, &ack)
 }
 
 fn refresh_all(s: &mut ControlSession, state: &mut HeadsetState) -> Result<(), DeviceError> {
@@ -242,36 +274,28 @@ fn apply(
         Command::Shutdown => Ok(()),
         Command::Refresh => refresh_all(s, state),
         Command::SetSidetone(v) => {
-            let enable = encode_write(SIDETONE_ENABLE, 1).expect("allowlisted");
-            let ack = s.exchange(&enable, SIDETONE_ENABLE, true)?;
-            reject_unless_ok(&ack)?;
-            let req = encode_write(Param::Sidetone.id(), v).expect("allowlisted");
-            let ack = s.exchange(&req, Param::Sidetone.id(), true)?;
-            reject_unless_ok(&ack)?;
+            write_param(s, Param::Sidetone, &[v])?;
             // Read back rather than assuming: the device is the source of truth.
             read_into(s, Param::Sidetone, state)
         }
         Command::SetGameChat(v) => {
-            let req = encode_write(Param::GameChatBalance.id(), v).expect("allowlisted");
-            let ack = s.exchange(&req, Param::GameChatBalance.id(), true)?;
-            reject_unless_ok(&ack)?;
+            write_param(s, Param::GameChatBalance, &[v])?;
             read_into(s, Param::GameChatBalance, state)
         }
         Command::SetNoise(want) => {
             // No preamble was ever observed for this parameter, unlike
-            // sidetone's 0x18. The vendor software's read before the write is
-            // the UI's job here: it composed `want` from the state it holds.
-            let req = encode_noise_write(want)
+            // sidetone's. The vendor software's read before the write is the
+            // UI's job here: it composed `want` from the state it holds.
+            let payload = noise_write_payload(want)
                 .map_err(|e| DeviceError::ProtocolMismatch(e.to_string()))?;
-            let ack = s.exchange(&req, Param::NoiseCancellation.id(), true)?;
-            reject_unless_ok(&ack)?;
+            write_param(s, Param::NoiseCancellation, &payload)?;
             read_into(s, Param::NoiseCancellation, state)
         }
     }
 }
 
-fn reject_unless_ok(ack: &headset_protocol::ParamFrame) -> Result<(), DeviceError> {
-    match ack.result() {
+fn reject_unless_ok(codec: &dyn Codec, ack: &ParamFrame) -> Result<(), DeviceError> {
+    match codec.write_result(ack) {
         Some(ResultCode::Ok) | None => Ok(()),
         Some(ResultCode::Refused) => Err(DeviceError::ProtocolMismatch(
             "device refused the write (0xff); the mic mute switch or an unreachable \
@@ -288,7 +312,9 @@ fn reject_unless_ok(ack: &headset_protocol::ParamFrame) -> Result<(), DeviceErro
 mod tests {
     use super::*;
     use headset_device::{resolve_control_device, FakeHidBackend};
-    use headset_protocol::{checksum, NoiseMode, CONTROL_REPORT_LEN};
+    use headset_protocol::v3pro::noise::NoiseMode;
+    use headset_protocol::v3pro::{checksum, param_id};
+    use headset_protocol::CONTROL_REPORT_LEN;
     use std::sync::mpsc;
 
     const FIXTURE: &str =
@@ -332,7 +358,7 @@ mod tests {
         let info = resolve_control_device(&b).unwrap();
         b.push_read(
             &info.id,
-            response(Param::LinkState.id(), false, &[0x00, 0x00]),
+            response(param_id(Param::LinkState), false, &[0x00, 0x00]),
         );
 
         let states = run_to_completion(&b);
@@ -348,12 +374,12 @@ mod tests {
         let mut b = FakeHidBackend::from_fixture_str(FIXTURE).unwrap();
         let info = resolve_control_device(&b).unwrap();
         for r in [
-            response(Param::LinkState.id(), false, &[0x01, 0x00]),
-            response(Param::Battery.id(), false, &[49]),
-            response(Param::Sidetone.id(), false, &[7]),
-            response(Param::GameChatBalance.id(), false, &[10]),
-            response(Param::MicMute.id(), false, &[1]),
-            response(Param::NoiseCancellation.id(), false, &[0x01, 0x03]),
+            response(param_id(Param::LinkState), false, &[0x01, 0x00]),
+            response(param_id(Param::Battery), false, &[49]),
+            response(param_id(Param::Sidetone), false, &[7]),
+            response(param_id(Param::GameChatBalance), false, &[10]),
+            response(param_id(Param::MicMute), false, &[1]),
+            response(param_id(Param::NoiseCancellation), false, &[0x01, 0x03]),
         ] {
             b.push_read(&info.id, r);
         }
@@ -382,9 +408,9 @@ mod tests {
         // Link read short-circuits the rest of the refresh, so the only
         // exchanges after it are the write and its read-back.
         for r in [
-            response(Param::LinkState.id(), false, &[0x00, 0x00]),
-            response(Param::NoiseCancellation.id(), true, &[0x00]),
-            response(Param::NoiseCancellation.id(), false, &[0x50, 0x03]),
+            response(param_id(Param::LinkState), false, &[0x00, 0x00]),
+            response(param_id(Param::NoiseCancellation), true, &[0x00]),
+            response(param_id(Param::NoiseCancellation), false, &[0x50, 0x03]),
         ] {
             b.push_read(&info.id, r);
         }
@@ -426,12 +452,12 @@ mod tests {
         let mut b = FakeHidBackend::from_fixture_str(FIXTURE).unwrap();
         let info = resolve_control_device(&b).unwrap();
         for r in [
-            response(Param::LinkState.id(), false, &[0x01, 0x00]),
-            response(Param::Battery.id(), false, &[0xFF]),
-            response(Param::Sidetone.id(), false, &[0xFF]),
-            response(Param::GameChatBalance.id(), false, &[0xFF]),
-            response(Param::MicMute.id(), false, &[0xFF]),
-            response(Param::NoiseCancellation.id(), false, &[0xFF]),
+            response(param_id(Param::LinkState), false, &[0x01, 0x00]),
+            response(param_id(Param::Battery), false, &[0xFF]),
+            response(param_id(Param::Sidetone), false, &[0xFF]),
+            response(param_id(Param::GameChatBalance), false, &[0xFF]),
+            response(param_id(Param::MicMute), false, &[0xFF]),
+            response(param_id(Param::NoiseCancellation), false, &[0xFF]),
         ] {
             b.push_read(&info.id, r);
         }

@@ -6,7 +6,9 @@ use headset_cli::cli::{
 };
 use headset_cli::cmd::params;
 use headset_device::{resolve_control_device, FakeHidBackend};
-use headset_protocol::{checksum, Param, CONTROL_REPORT_LEN, NOISE_PARAM};
+use headset_protocol::v3pro::noise::NOISE_PARAM;
+use headset_protocol::v3pro::{checksum, param_id};
+use headset_protocol::{Param, CONTROL_REPORT_LEN};
 
 const FIXTURE: &str = include_str!("../../headset-device/tests/fixtures/blackshark-v3-pro-ps.json");
 
@@ -46,7 +48,7 @@ fn backend_with(reports: Vec<Vec<u8>>) -> FakeHidBackend {
 
 #[test]
 fn get_battery_reports_the_value_the_device_returned() {
-    let b = backend_with(vec![response(Param::Battery.id(), false, &[49])]);
+    let b = backend_with(vec![response(param_id(Param::Battery), false, &[49])]);
     let args = GetArgs {
         name: "battery".into(),
     };
@@ -56,7 +58,7 @@ fn get_battery_reports_the_value_the_device_returned() {
 
 #[test]
 fn get_json_carries_the_id_and_raw_payload() {
-    let b = backend_with(vec![response(Param::Battery.id(), false, &[49])]);
+    let b = backend_with(vec![response(param_id(Param::Battery), false, &[49])]);
     let args = GetArgs {
         name: "battery".into(),
     };
@@ -73,8 +75,8 @@ fn a_refused_read_is_reported_as_unavailable_not_as_255() {
     // Observed on real hardware with the headset powered off: link reports
     // 00 00 and every proxied parameter answers with a lone 0xff.
     let b = backend_with(vec![
-        response(Param::Battery.id(), false, &[0xFF]),
-        response(Param::LinkState.id(), false, &[0x00, 0x00]),
+        response(param_id(Param::Battery), false, &[0xFF]),
+        response(param_id(Param::LinkState), false, &[0x00, 0x00]),
     ]);
     let args = GetArgs {
         name: "battery".into(),
@@ -88,8 +90,8 @@ fn a_refused_read_is_reported_as_unavailable_not_as_255() {
 #[test]
 fn a_refused_read_reports_null_in_json_rather_than_a_wrong_number() {
     let b = backend_with(vec![
-        response(Param::Battery.id(), false, &[0xFF]),
-        response(Param::LinkState.id(), false, &[0x00, 0x00]),
+        response(param_id(Param::Battery), false, &[0xFF]),
+        response(param_id(Param::LinkState), false, &[0x00, 0x00]),
     ]);
     let args = GetArgs {
         name: "battery".into(),
@@ -104,7 +106,11 @@ fn a_refused_read_reports_null_in_json_rather_than_a_wrong_number() {
 
 #[test]
 fn link_state_reads_as_words_not_raw_bytes() {
-    let b = backend_with(vec![response(Param::LinkState.id(), false, &[0x01, 0x00])]);
+    let b = backend_with(vec![response(
+        param_id(Param::LinkState),
+        false,
+        &[0x01, 0x00],
+    )]);
     let args = GetArgs {
         name: "link".into(),
     };
@@ -113,7 +119,11 @@ fn link_state_reads_as_words_not_raw_bytes() {
         "link: connected\n"
     );
 
-    let b = backend_with(vec![response(Param::LinkState.id(), false, &[0x00, 0x00])]);
+    let b = backend_with(vec![response(
+        param_id(Param::LinkState),
+        false,
+        &[0x00, 0x00],
+    )]);
     assert_eq!(
         params::run_get(&b, &args, false).unwrap(),
         "link: not connected\n"
@@ -124,7 +134,7 @@ fn link_state_reads_as_words_not_raw_bytes() {
 fn a_healthy_read_costs_one_exchange() {
     // The link probe exists to explain a refusal; it must not be paid for on
     // every successful read, since each exchange is paced at 250 ms.
-    let b = backend_with(vec![response(Param::Battery.id(), false, &[49])]);
+    let b = backend_with(vec![response(param_id(Param::Battery), false, &[49])]);
     let args = GetArgs {
         name: "battery".into(),
     };
@@ -161,9 +171,9 @@ fn get_rejects_an_unknown_name_and_lists_the_known_ones() {
 #[test]
 fn set_sidetone_sends_the_observed_enable_preamble_then_the_level() {
     let b = backend_with(vec![
-        response(0x18, true, &[0x00]),                 // enable ack
-        response(Param::Sidetone.id(), true, &[0x00]), // level ack
-        response(Param::Sidetone.id(), false, &[7]),   // read-back
+        response(0x18, true, &[0x00]),                      // enable ack
+        response(param_id(Param::Sidetone), true, &[0x00]), // level ack
+        response(param_id(Param::Sidetone), false, &[7]),   // read-back
     ]);
     let args = SetArgs {
         name: "sidetone".into(),
@@ -183,8 +193,8 @@ fn set_sidetone_sends_the_observed_enable_preamble_then_the_level() {
 #[test]
 fn set_game_chat_sends_no_preamble() {
     let b = backend_with(vec![
-        response(Param::GameChatBalance.id(), true, &[0x00]),
-        response(Param::GameChatBalance.id(), false, &[10]),
+        response(param_id(Param::GameChatBalance), true, &[0x00]),
+        response(param_id(Param::GameChatBalance), false, &[10]),
     ]);
     let args = SetArgs {
         name: "game-chat".into(),
@@ -219,7 +229,7 @@ fn a_refused_write_is_an_error_not_a_success() {
 fn an_unrecognised_result_code_is_not_treated_as_success() {
     let b = backend_with(vec![
         response(0x18, true, &[0x00]),
-        response(Param::Sidetone.id(), true, &[0x42]),
+        response(param_id(Param::Sidetone), true, &[0x42]),
     ]);
     let args = SetArgs {
         name: "sidetone".into(),
@@ -234,8 +244,8 @@ fn set_reports_a_readback_that_disagrees_with_what_was_written() {
     // The device accepting a write is not evidence it applied it.
     let b = backend_with(vec![
         response(0x18, true, &[0x00]),
-        response(Param::Sidetone.id(), true, &[0x00]),
-        response(Param::Sidetone.id(), false, &[3]),
+        response(param_id(Param::Sidetone), true, &[0x00]),
+        response(param_id(Param::Sidetone), false, &[3]),
     ]);
     let args = SetArgs {
         name: "sidetone".into(),
@@ -480,7 +490,7 @@ fn noise_reports_a_readback_that_disagrees_with_what_was_written() {
 fn noise_is_unavailable_rather_than_wrong_when_the_headset_is_off() {
     let b = backend_with(vec![
         response(NOISE_PARAM, false, &[0xFF]),
-        response(Param::LinkState.id(), false, &[0x00, 0x00]),
+        response(param_id(Param::LinkState), false, &[0x00, 0x00]),
     ]);
     let out = params::run_noise(&b, &show(), false).unwrap();
     assert!(out.contains("unavailable"), "{out}");
@@ -541,7 +551,7 @@ fn param_set_refuses_a_single_byte_write_of_the_two_byte_parameter() {
 #[test]
 fn watch_names_known_parameters_and_leaves_unknown_ones_unnamed() {
     let b = backend_with(vec![
-        event(Param::Battery.id(), &[49]),
+        event(param_id(Param::Battery), &[49]),
         event(0x2C, &[0x0F]),
     ]);
     let args = WatchArgs { seconds: 1 };
@@ -553,7 +563,7 @@ fn watch_names_known_parameters_and_leaves_unknown_ones_unnamed() {
 
 #[test]
 fn watch_writes_nothing() {
-    let b = backend_with(vec![event(Param::MicMute.id(), &[1])]);
+    let b = backend_with(vec![event(param_id(Param::MicMute), &[1])]);
     let args = WatchArgs { seconds: 1 };
     let out = params::run_watch(&b, &args, true).unwrap();
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();

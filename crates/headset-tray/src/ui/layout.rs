@@ -4,7 +4,7 @@
 //! value-to-position mapping and its inverse, and every clickable region can be
 //! tested without a GPU. `render` walks the primitive list and decides nothing.
 
-use headset_protocol::{NoiseControl, NoiseMode, ANC_LEVEL_RANGE};
+use headset_protocol::v3pro::noise::{NoiseControl, NoiseMode, ANC_LEVEL_RANGE};
 
 use crate::output::{Problem, Slot};
 use crate::state::HeadsetState;

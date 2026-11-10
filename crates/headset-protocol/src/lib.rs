@@ -1,16 +1,16 @@
 //! Pure protocol logic. No operating-system access.
+//!
+//! [`codec`] holds what every supported device has in common and the
+//! [`Codec`] trait that separates them. Each device's own framing, identifiers
+//! and allowlists live in a module of their own: [`v3pro`] for the BlackShark
+//! V3 Pro.
 #![forbid(unsafe_code)]
 
+pub mod codec;
 pub mod error;
 pub mod frame;
-pub mod noise;
-pub mod param;
+pub mod v3pro;
 
+pub use codec::{Codec, Param, ParamFrame, ResultCode, Role};
 pub use error::ProtocolError;
 pub use frame::{ControlFrame, CONTROL_PAYLOAD_LEN, CONTROL_REPORT_ID, CONTROL_REPORT_LEN};
-pub use noise::{encode_noise_write, NoiseControl, NoiseMode, ANC_LEVEL_RANGE, NOISE_PARAM};
-pub use param::{
-    checksum, encode_read, encode_write, encode_write_payload, parse, write_payload_len, Param,
-    ParamFrame, ResultCode, Role, INDEXED_READS, MAX_PAYLOAD, PAIR_WRITES, READ_ALLOWLIST,
-    WRITE_ALLOWLIST,
-};

@@ -1,17 +1,14 @@
 use crate::model::CollectionInfo;
+use crate::profile::profile_for;
 
-/// Devices this project has been tested against. Candidate selection is scoped
-/// to these: shape-based ranking alone will happily pick an unrelated vendor's
-/// HID collection, so positive device identification comes first. `0x101B` is
-/// the only product this project has actually been tested against; do not add
-/// `0x0577` or any other id here — `docs/device-research.md` explicitly
-/// refutes that PID for this hardware.
-pub const SUPPORTED_VENDOR_ID: u16 = 0x1532;
-pub const SUPPORTED_PRODUCT_IDS: &[u16] = &[0x101B];
-
-/// True when `c` belongs to a device this project has been tested against.
+/// True when `c` belongs to a device this project has a profile for.
+///
+/// Candidate selection is scoped to these: shape-based ranking alone will
+/// happily pick an unrelated vendor's HID collection, so positive device
+/// identification comes first. The list of supported products is
+/// [`crate::profile::PROFILES`].
 pub fn is_supported_device(c: &CollectionInfo) -> bool {
-    c.vendor_id == SUPPORTED_VENDOR_ID && SUPPORTED_PRODUCT_IDS.contains(&c.product_id)
+    profile_for(c).is_some()
 }
 
 /// One ranked enumeration entry, with the reasoning that produced its score.

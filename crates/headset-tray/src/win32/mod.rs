@@ -56,7 +56,7 @@ pub(crate) mod place;
 use crate::state::HeadsetState;
 use crate::ui::{self, HitTarget, SliderParam, View};
 use crate::worker::Command;
-use headset_protocol::{NoiseControl, NoiseMode};
+use headset_protocol::v3pro::noise::{NoiseControl, NoiseMode};
 
 /// Tray icon callback.
 const WM_TRAY: u32 = WM_APP + 1;

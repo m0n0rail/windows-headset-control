@@ -223,7 +223,7 @@ fn run_explain_output() {
 /// below. With no states, renders all of them.
 #[cfg(windows)]
 fn run_render_panel() {
-    use headset_protocol::{NoiseControl, NoiseMode};
+    use headset_protocol::v3pro::noise::{NoiseControl, NoiseMode};
     use headset_tray::state::HeadsetState;
     use headset_tray::ui::{self, layout::SliderParam, View};
     use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};

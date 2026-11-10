@@ -3,8 +3,7 @@ use std::time::Duration;
 use anyhow::{bail, Result};
 use headset_device::{
     has_unambiguous_winner, is_supported_device, rank_candidates, stable_sort_collections,
-    Candidate, CollectionInfo, DeviceError, HidBackend, OpenMode, SUPPORTED_PRODUCT_IDS,
-    SUPPORTED_VENDOR_ID,
+    Candidate, CollectionInfo, DeviceError, HidBackend, OpenMode, PROFILES,
 };
 use headset_protocol::ControlFrame;
 use serde_json::json;
@@ -75,14 +74,14 @@ pub fn run(
             if scoped.is_empty() {
                 let wanted = match (args.vendor_id, args.product_id) {
                     (None, None) => {
-                        let products = SUPPORTED_PRODUCT_IDS
+                        let products = PROFILES
                             .iter()
-                            .map(|p| format!("{p:#06x}"))
+                            .map(|p| format!("{:#06x}:{:#06x}", p.vendor_id, p.product_id))
                             .collect::<Vec<_>>()
                             .join(", ");
                         format!(
-                            "vendor {SUPPORTED_VENDOR_ID:#06x}, product in [{products}] \
-                             (the only device this project supports)"
+                            "vendor:product in [{products}] \
+                             (the devices this project has a profile for)"
                         )
                     }
                     (v, p) => format!(

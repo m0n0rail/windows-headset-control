@@ -7,21 +7,14 @@ use std::time::Duration;
 
 use anyhow::{bail, Result};
 use headset_device::{ControlSession, HidBackend};
-use headset_protocol::{
-    encode_noise_write, encode_read, encode_write, NoiseControl, NoiseMode, Param, ParamFrame,
-    ResultCode, ANC_LEVEL_RANGE, INDEXED_READS, NOISE_PARAM, PAIR_WRITES, READ_ALLOWLIST,
-    WRITE_ALLOWLIST,
+use headset_protocol::v3pro::noise::{
+    noise_write_payload, NoiseControl, NoiseMode, ANC_LEVEL_RANGE,
 };
+use headset_protocol::{Codec, Param, ParamFrame, ResultCode};
 use serde_json::json;
 
 use crate::cli::{GetArgs, NoiseArgs, NoiseModeArg, ParamAction, ParamArgs, SetArgs, WatchArgs};
 use crate::render::json::SCHEMA_VERSION;
-
-/// Sidetone writes are preceded by `0x18 = 01`, which is what the vendor
-/// software was observed doing before every level write. Reproducing the
-/// observed sequence is the only behaviour we can defend; sending the level
-/// alone was never seen on the wire.
-const SIDETONE_ENABLE: u8 = 0x18;
 
 fn hex_list(ids: &[u8]) -> String {
     ids.iter()
@@ -39,6 +32,29 @@ fn lookup(name: &str) -> Result<Param> {
             .join(", ");
         anyhow::anyhow!("unknown parameter `{name}`; known parameters are: {names}")
     })
+}
+
+/// This device's identifier for `param`, or an error naming the device when it
+/// has no established equivalent.
+fn id_on(session: &ControlSession, param: Param) -> Result<u8> {
+    session.codec().id(param).ok_or_else(|| {
+        anyhow::anyhow!(
+            "`{}` is not established on the {}; there is no identifier to send",
+            param.name(),
+            session.profile().name
+        )
+    })
+}
+
+/// Reads the link state to explain a refusal. `None` when it cannot be read.
+fn probe_link(session: &mut ControlSession) -> Option<bool> {
+    let codec = session.codec();
+    let id = codec.id(Param::LinkState)?;
+    let probe = codec.encode_read(id, None).ok()?;
+    session
+        .exchange(&probe, id, false)
+        .ok()
+        .map(|f| link_is_up(&f))
 }
 
 /// Whether a read came back refused.
@@ -63,18 +79,15 @@ fn link_is_up(frame: &ParamFrame) -> bool {
 pub fn run_get(backend: &dyn HidBackend, args: &GetArgs, as_json: bool) -> Result<String> {
     let param = lookup(&args.name)?;
     let mut session = ControlSession::open(backend)?;
-    let request = encode_read(param.id(), None)?;
-    let frame = session.exchange(&request, param.id(), false)?;
+    let id = id_on(&session, param)?;
+    let request = session.codec().encode_read(id, None)?;
+    let frame = session.exchange(&request, id, false)?;
 
     // Only pay for the extra exchange when something is actually wrong: a
     // healthy read costs one round trip, and the link is consulted purely to
     // explain a refusal.
     let link_up = if looks_refused(param, &frame) {
-        let probe = encode_read(Param::LinkState.id(), None)?;
-        session
-            .exchange(&probe, Param::LinkState.id(), false)
-            .ok()
-            .map(|f| link_is_up(&f))
+        probe_link(&mut session)
     } else {
         None
     };
@@ -85,7 +98,7 @@ pub fn run_get(backend: &dyn HidBackend, args: &GetArgs, as_json: bool) -> Resul
         serde_json::to_string_pretty(&json!({
             "schema_version": SCHEMA_VERSION,
             "parameter": param.name(),
-            "id": format!("{:#04x}", param.id()),
+            "id": format!("{id:#04x}"),
             // Null rather than 255 when refused: 255 is not a battery level,
             // and emitting it would put a wrong number into a machine-readable
             // contract.
@@ -140,14 +153,21 @@ pub fn run_set(backend: &dyn HidBackend, args: &SetArgs, as_json: bool) -> Resul
              `headsetctl noise --mode <off|anc|ambient> --level <1-4>`."
         );
     }
-    if !param.is_writable() {
+
+    // Whether a parameter is writable, and over what range, is what was
+    // observed on a particular device, so the device is identified first.
+    // Nothing is sent until every check below has passed.
+    let mut session = ControlSession::open(backend)?;
+    let codec = session.codec();
+    let id = id_on(&session, param)?;
+    if !codec.is_writable(param) {
         bail!(
             "`{}` is read-only: no write for it was ever observed on the wire, so this \
              project has no command to send",
             param.name()
         );
     }
-    if let Some((lo, hi)) = param.range() {
+    if let Some((lo, hi)) = codec.range(param) {
         if args.value < lo || args.value > hi {
             bail!(
                 "{} accepts {lo}..={hi}; {} is outside the range observed on this hardware",
@@ -157,29 +177,27 @@ pub fn run_set(backend: &dyn HidBackend, args: &SetArgs, as_json: bool) -> Resul
         }
     }
 
-    let mut session = ControlSession::open(backend)?;
-
-    if param == Param::Sidetone {
-        let enable = encode_write(SIDETONE_ENABLE, 1)?;
-        let ack = session.exchange(&enable, SIDETONE_ENABLE, true)?;
-        check_result(&ack, "sidetone enable")?;
+    if let Some((pre_id, pre_value)) = codec.write_preamble(param) {
+        let pre = codec.encode_write(pre_id, &[pre_value])?;
+        let ack = session.exchange(&pre, pre_id, true)?;
+        check_result(codec, &ack, &format!("{} enable", param.name()))?;
     }
 
-    let request = encode_write(param.id(), args.value)?;
-    let ack = session.exchange(&request, param.id(), true)?;
-    check_result(&ack, param.name())?;
+    let request = codec.encode_write(id, &[args.value])?;
+    let ack = session.exchange(&request, id, true)?;
+    check_result(codec, &ack, param.name())?;
 
     // Device is the source of truth: a successful write is not evidence that
     // the value changed. Read it back and report what the device actually holds.
-    let verify = encode_read(param.id(), None)?;
-    let now = session.exchange(&verify, param.id(), false)?;
+    let verify = codec.encode_read(id, None)?;
+    let now = session.exchange(&verify, id, false)?;
     let readback = now.value();
 
     Ok(if as_json {
         serde_json::to_string_pretty(&json!({
             "schema_version": SCHEMA_VERSION,
             "parameter": param.name(),
-            "id": format!("{:#04x}", param.id()),
+            "id": format!("{id:#04x}"),
             "requested": args.value,
             "readback": readback,
             "applied": readback == Some(args.value),
@@ -232,39 +250,44 @@ pub fn run_noise(backend: &dyn HidBackend, args: &NoiseArgs, as_json: bool) -> R
     }
 
     let mut session = ControlSession::open(backend)?;
-    let read = encode_read(NOISE_PARAM, None)?;
-    let frame = session.exchange(&read, NOISE_PARAM, false)?;
+    let codec = session.codec();
+    let id = id_on(&session, Param::NoiseCancellation)?;
+    let read = codec.encode_read(id, None)?;
+    let frame = session.exchange(&read, id, false)?;
 
     let Some(current) = NoiseControl::from_payload(&frame.payload) else {
         // Same refusal the other proxied parameters give when the headset is
         // unreachable. Consult the link only to explain it.
-        let probe = encode_read(Param::LinkState.id(), None)?;
-        let link_up = session
-            .exchange(&probe, Param::LinkState.id(), false)
-            .ok()
-            .map(|f| link_is_up(&f));
-        return Ok(render_noise(&frame, None, link_up, None, as_json));
+        let link_up = probe_link(&mut session);
+        return Ok(render_noise(id, &frame, None, link_up, None, as_json));
     };
 
     if args.mode.is_none() && args.level.is_none() {
-        return Ok(render_noise(&frame, Some(current), None, None, as_json));
+        return Ok(render_noise(id, &frame, Some(current), None, None, as_json));
     }
 
     let desired = NoiseControl {
         mode: args.mode.map_or(current.mode, mode_of),
         anc_level: args.level.unwrap_or(current.anc_level),
     };
-    let request = encode_noise_write(desired)?;
-    let ack = session.exchange(&request, NOISE_PARAM, true)?;
-    check_result(&ack, "noise-cancellation")?;
+    let request = codec.encode_write(id, &noise_write_payload(desired)?)?;
+    let ack = session.exchange(&request, id, true)?;
+    check_result(codec, &ack, "noise-cancellation")?;
 
     // Device is the source of truth: a successful write is not evidence that
     // the value changed.
-    let verify = encode_read(NOISE_PARAM, None)?;
-    let now = session.exchange(&verify, NOISE_PARAM, false)?;
+    let verify = codec.encode_read(id, None)?;
+    let now = session.exchange(&verify, id, false)?;
     let readback = NoiseControl::from_payload(&now.payload);
 
-    Ok(render_noise(&now, readback, None, Some(desired), as_json))
+    Ok(render_noise(
+        id,
+        &now,
+        readback,
+        None,
+        Some(desired),
+        as_json,
+    ))
 }
 
 /// Renders a noise-control state, whether it was just read or just written.
@@ -272,6 +295,7 @@ pub fn run_noise(backend: &dyn HidBackend, args: &NoiseArgs, as_json: bool) -> R
 /// `requested` is present only after a write, and is what makes the difference
 /// between "this is the state" and "this is the state despite what was asked".
 fn render_noise(
+    id: u8,
     frame: &ParamFrame,
     state: Option<NoiseControl>,
     link_up: Option<bool>,
@@ -283,7 +307,7 @@ fn render_noise(
         return serde_json::to_string_pretty(&json!({
             "schema_version": SCHEMA_VERSION,
             "parameter": name,
-            "id": format!("{:#04x}", NOISE_PARAM),
+            "id": format!("{id:#04x}"),
             // Null rather than a guess: an unrecognised mode byte has no name,
             // and a refused read has no state at all.
             "mode": state.and_then(|s| s.mode.name()),
@@ -319,8 +343,8 @@ fn render_noise(
     }
 }
 
-fn check_result(ack: &ParamFrame, what: &str) -> Result<()> {
-    match ack.result() {
+fn check_result(codec: &dyn Codec, ack: &ParamFrame, what: &str) -> Result<()> {
+    match codec.write_result(ack) {
         Some(ResultCode::Ok) | None => Ok(()),
         Some(ResultCode::Refused) => bail!(
             "the device refused the {what} write (result 0xff). This was observed when the \
@@ -337,40 +361,48 @@ fn check_result(ack: &ParamFrame, what: &str) -> Result<()> {
 pub fn run_param(backend: &dyn HidBackend, args: &ParamArgs, as_json: bool) -> Result<String> {
     match &args.action {
         ParamAction::Get { id, index } => {
-            if !READ_ALLOWLIST.contains(id) {
+            // The allowlists are per device, so the device is identified before
+            // the identifier is checked. Nothing is sent until it has passed.
+            let mut session = ControlSession::open(backend)?;
+            let codec = session.codec();
+            if !codec.read_allowlist().contains(id) {
                 bail!(
                     "{id:#04x} is not in the observed read allowlist. Only identifiers seen \
                      on the wire may be sent. Allowed: {}",
-                    hex_list(&READ_ALLOWLIST)
+                    hex_list(codec.read_allowlist())
                 );
             }
-            if index.is_some() && !INDEXED_READS.contains(id) {
+            if index.is_some() && !codec.indexed_reads().contains(id) {
                 bail!(
                     "{id:#04x} was not observed taking an index; indexed reads are: {}",
-                    hex_list(&INDEXED_READS)
+                    hex_list(codec.indexed_reads())
                 );
             }
-            let mut session = ControlSession::open(backend)?;
-            let request = encode_read(*id, *index)?;
+            let request = codec.encode_read(*id, *index)?;
             let frame = session.exchange(&request, *id, false)?;
             Ok(render_raw(*id, false, &frame, as_json))
         }
         ParamAction::Set { id, value } => {
-            if !WRITE_ALLOWLIST.contains(id) {
+            let mut session = ControlSession::open(backend)?;
+            let codec = session.codec();
+            if !codec.write_allowlist().contains(id) {
                 bail!(
                     "{id:#04x} is not in the observed write allowlist. Only identifiers seen \
                      being written may be sent. Allowed: {}",
-                    hex_list(&WRITE_ALLOWLIST)
+                    hex_list(codec.write_allowlist())
                 );
             }
-            if PAIR_WRITES.contains(id) {
+            if codec.write_payload_len(*id) != 1 {
                 bail!(
-                    "{id:#04x} was only ever observed being written with two payload bytes, \
-                     which `param set` cannot express. Use `headsetctl noise` for it."
+                    "{id:#04x} was only ever observed being written with {} payload bytes, \
+                     which `param set` cannot express. Use `headsetctl noise` for it.",
+                    match codec.write_payload_len(*id) {
+                        2 => "two".to_string(),
+                        n => n.to_string(),
+                    }
                 );
             }
-            let mut session = ControlSession::open(backend)?;
-            let request = encode_write(*id, *value)?;
+            let request = codec.encode_write(*id, &[*value])?;
             let frame = session.exchange(&request, *id, true)?;
             Ok(render_raw(*id, true, &frame, as_json))
         }
@@ -407,7 +439,7 @@ pub fn run_watch(backend: &dyn HidBackend, args: &WatchArgs, as_json: bool) -> R
             .map(|e| {
                 json!({
                     "id": format!("{:#04x}", e.param),
-                    "name": name_of(e.param),
+                    "name": name_of(session.codec(), e.param),
                     "value": e.value(),
                     "payload_hex": e.hex_payload(),
                 })
@@ -428,7 +460,7 @@ pub fn run_watch(backend: &dyn HidBackend, args: &WatchArgs, as_json: bool) -> R
         let mut s = String::new();
         for e in &events {
             use std::fmt::Write as _;
-            let label = name_of(e.param).unwrap_or("unidentified");
+            let label = name_of(session.codec(), e.param).unwrap_or("unidentified");
             let _ = writeln!(
                 s,
                 "{:#04x} {:<16} {}",
@@ -442,6 +474,6 @@ pub fn run_watch(backend: &dyn HidBackend, args: &WatchArgs, as_json: bool) -> R
 }
 
 /// The name of a parameter, or `None` when its meaning is not established.
-fn name_of(id: u8) -> Option<&'static str> {
-    Param::ALL.iter().find(|p| p.id() == id).map(|p| p.name())
+fn name_of(codec: &dyn Codec, id: u8) -> Option<&'static str> {
+    codec.param_for(id).map(|p| p.name())
 }

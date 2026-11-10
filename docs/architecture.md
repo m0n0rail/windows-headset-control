@@ -4,7 +4,7 @@
 
 | Crate | Responsibility | May touch the OS |
 | ----- | -------------- | ----------------- |
-| `headset-protocol` | Pure protocol logic: report models, framing, serialization, and parsing, plus the parameter-access codec and its byte-62 XOR checksum (established by observation — see docs/device-research.md). Holds the observed-identifier allowlists, so an unobserved command cannot be encoded anywhere in the workspace. No dependency on `headset-device`. | No |
+| `headset-protocol` | Pure protocol logic. `codec` holds the shared vocabulary (`Param`, `Role`, `ParamFrame`) and the `Codec` trait; each device's framing, identifiers and allowlists live in a module of their own (`v3pro`, with its byte-62 XOR checksum, established by observation — see docs/device-research.md). Encoding goes through a codec, so an identifier its device was not observed accepting cannot be encoded anywhere in the workspace. No dependency on `headset-device`. | No |
 | `headset-device` | All Windows HID access behind a mockable `HidBackend` trait. Real windows-rs implementation (`WindowsHidBackend`) and a fixture-driven fake (`FakeHidBackend`) for tests. Also owns `ControlSession`: identity-based device resolution and request/response correlation. Depends on `headset-protocol`; the reverse dependency stays forbidden. | Yes |
 | `headset-cli` | `headsetctl.exe`. Command dispatch, filtering, ranking, redaction, and rendering, all built above the `HidBackend` trait so they are testable without hardware. | No (delegates to `headset-device`) |
 | `headset-tray` | `headset-tray.exe`. The Windows tray application: a safe state model, a device thread owning the one `ControlSession`, and a confined `unsafe` Win32 module for the notification icon, menus, and Core Audio microphone mute. | Yes — see Unsafe confinement |
@@ -54,18 +54,46 @@ with `OpenMode::ReadWrite`.
 `probe` uses `OpenMode::Read`, so its documented read-only contract is now enforced by
 the access rights Windows granted, not merely by the absence of a call.
 
+## Device profiles and codecs
+
+A product is supported exactly when it has a `DeviceProfile` in
+`crates/headset-device/src/profile.rs`. A profile carries everything the rest of the
+workspace may assume about that product:
+
+- its vendor and product id, which is how it is recognised;
+- the `ControlShape` its protocol was measured on — the control collection's usage page
+  and report lengths;
+- the `Codec` that encodes and parses its reports.
+
+`Codec` (in `headset-protocol`) is the seam between devices. It maps the shared `Param`
+vocabulary to that device's identifiers and ranges, holds its read and write allowlists and
+any write preamble the vendor software was observed sending, and parses one input report
+into the `ParamFrame`s it carries — zero or one for the V3 Pro. A device with no evidence
+for a parameter does not map it, which is how "this device has no such setting" is
+expressed; nothing reaches an identifier by assuming two devices share one.
+
+`ControlSession` keeps the profile it resolved, and callers encode through
+`session.codec()` and interpret frames through the same codec. The CLI and the tray never
+name a device's identifiers directly.
+
+Adding a product means adding a profile and, when its protocol differs, a codec module —
+each backed by its own capture evidence in `docs/`. The BlackShark V3 Pro (`0x1532` /
+`0x101B`, codec `v3pro`) is currently the only profile.
+
 ## Control device resolution
 
 `ControlSession` never resolves the device by candidate index or by a stored device path.
 Both are machine-local: the control collection sits at a different absolute index on a
 different PC, and the path embeds an instance id that changes when the dongle is
-replugged. Resolution runs on every session: enumerate, filter to `is_supported_device`,
-require usage page `0xFF14` with 64-byte input and output reports. Zero matches and more
-than one match are both errors rather than a guess.
+replugged. Resolution runs on every session: enumerate, keep collections whose product has
+a profile, and require the usage page that profile's protocol was measured on, then check
+the report lengths against the same profile. Zero matches and more than one match are both
+errors rather than a guess.
 
-The descriptor-shape check is a safety gate, not a sanity check. The protocol was derived
-from one PID's measured framing; a second supported PID whose control collection differs
-is refused rather than written to on the assumption that our framing applies.
+The descriptor-shape check is a safety gate, not a sanity check. Each profile's protocol
+was derived from that product's measured framing; a control collection that differs from
+its own profile's shape is refused rather than written to on the assumption that the
+framing applies.
 
 ## Candidate selection and the supported-device allowlist
 
@@ -79,8 +107,8 @@ is refused rather than written to on the assumption that our framing applies.
   looking at — it will happily rank an unrelated vendor's HID collection above every
   collection belonging to the headset this project actually supports, if that unrelated
   collection happens to declare a wider report.
-- `is_supported_device` / `SUPPORTED_VENDOR_ID` / `SUPPORTED_PRODUCT_IDS` positively
-  identify the one device (`0x1532` / `0x101B`) this project has been tested against.
+- `is_supported_device` positively identifies the products this project has a profile for
+  (`PROFILES` in `profile.rs`; currently only `0x1532` / `0x101B`).
 
 **Automatic candidate selection must always be scoped to `is_supported_device`, never to
 shape-based ranking alone.** `headsetctl probe`'s default (no `--candidate`) path applies

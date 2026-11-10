@@ -13,9 +13,9 @@
 //! writes without reading first will clobber the other field, which is why this
 //! module has no "set the mode" entry point that does not also carry a level.
 
+use super::encode_write_payload;
 use crate::error::ProtocolError;
 use crate::frame::CONTROL_REPORT_LEN;
-use crate::param::encode_write_payload;
 
 /// The parameter this module speaks for.
 pub const NOISE_PARAM: u8 = 0x12;
@@ -139,6 +139,12 @@ impl NoiseControl {
 pub fn encode_noise_write(
     control: NoiseControl,
 ) -> Result<[u8; CONTROL_REPORT_LEN], ProtocolError> {
+    encode_write_payload(NOISE_PARAM, &noise_write_payload(control)?)
+}
+
+/// The two payload bytes [`encode_noise_write`] sends, for callers that encode
+/// through a [`crate::Codec`]. Applies the same refusals.
+pub fn noise_write_payload(control: NoiseControl) -> Result<[u8; 2], ProtocolError> {
     if let NoiseMode::Unrecognised(b) = control.mode {
         return Err(ProtocolError::UnobservedValue {
             param: NOISE_PARAM,
@@ -154,13 +160,13 @@ pub fn encode_noise_write(
             value: control.anc_level,
         });
     }
-    encode_write_payload(NOISE_PARAM, &control.to_payload())
+    Ok(control.to_payload())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::param::parse;
+    use crate::v3pro::parse;
 
     #[test]
     fn parses_the_captured_anc_readback() {
