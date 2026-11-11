@@ -506,7 +506,15 @@ fn run_tray() {
     });
 
     // Seed the OS-side mute before the first paint so the menu does not open
-    // showing "unknown" for something we can read synchronously.
+    // showing "unknown" for something we can read synchronously. Core Audio
+    // needs an initialised apartment, and this thread's is otherwise set up only
+    // later, in `run_ui_with` -- so without this the read failed every time and
+    // the mute stayed unknown until a headset event filled it in. Initialising
+    // twice on one thread is harmless; the second call reports S_FALSE.
+    unsafe {
+        use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+    }
     if let Ok(m) = win32::get_mic_mute() {
         if let Ok(mut guard) = state.lock() {
             guard.mic_mute_os = Some(m);

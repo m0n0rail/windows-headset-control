@@ -30,6 +30,16 @@ All notable changes to this project are documented here. The format follows
 - The tray hides controls the connected headset does not have, marks a sidetone level it
   cannot read back as `SENT`, and names the detected model in its tooltip.
 
+### Fixed
+
+- **The Windows microphone mute is read at startup again.** It was read before the UI thread
+  had initialised COM, so the read failed every time and the mute pill stayed unknown until
+  a headset event filled it in. On the V3 Pro the startup read of the hardware switch hid
+  this; on the V2 Pro, which reports its switch only when it changes, the pill showed `--`.
+- **The tray tooltip is shown.** The icon is registered under `NOTIFYICON_VERSION_4`, where
+  the shell shows the standard tooltip only when `NIF_SHOWTIP` is set. It never was, so the
+  tooltip text was kept up to date and never displayed.
+
 ## [0.2.0-alpha.4] - 2026-09-18
 
 ### Fixed
