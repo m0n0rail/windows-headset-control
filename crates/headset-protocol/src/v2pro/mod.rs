@@ -377,6 +377,26 @@ impl Codec for V2Pro {
     // off, a read of `0x20` -- like every other read -- went unanswered; the
     // dongle reports the link only by the `0x20` event it pushes when the
     // headset goes away and comes back.
+
+    fn session_open(&self) -> Option<Vec<u8>> {
+        Some(session_open_report().to_vec())
+    }
+}
+
+/// Synapse's `e1 01` request (family `0E`), byte for byte as captured (S26).
+///
+/// After the dongle is plugged in, it answers nothing but the link read until
+/// a host sends this; one is enough, and the effect lasts until the dongle is
+/// reset (sessions 24-26). Synapse sends it before its first read, which is
+/// why everything worked while Synapse had run since the dongle was plugged
+/// in. Its meaning beyond that is unknown, so it is sent only as observed.
+pub fn session_open_report() -> [u8; CONTROL_REPORT_LEN] {
+    const E1_REQUEST: [u8; 12] = [
+        0x02, 0x80, 0x07, 0x00, 0x00, 0x50, 0x41, 0x0e, 0x00, 0x02, 0xe1, 0x01,
+    ];
+    let mut buf = [0u8; CONTROL_REPORT_LEN];
+    buf[..E1_REQUEST.len()].copy_from_slice(&E1_REQUEST);
+    buf
 }
 
 #[cfg(test)]
@@ -395,6 +415,22 @@ mod tests {
 
     fn host(hex: &str) -> Vec<u8> {
         report(hex).to_vec()
+    }
+
+    #[test]
+    fn the_session_opening_request_matches_the_captured_frame() {
+        // S26 15.94 s: Synapse's first e1 request on a cold dongle.
+        assert_eq!(
+            V2_PRO.session_open().unwrap(),
+            host("02 80 07 00 00 50 41 0e 00 02 e1 01")
+        );
+    }
+
+    #[test]
+    fn the_answer_to_the_opening_request_carries_no_parameter() {
+        // S26 15.94 s, the device's answer: a family-01 message, not decoded.
+        let frames = parse(&report("02 0d 50 49 01 c0 f8 cd 01 00 03 00 0e 80 00")).unwrap();
+        assert!(frames.is_empty());
     }
 
     #[test]

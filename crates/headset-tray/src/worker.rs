@@ -549,10 +549,11 @@ mod tests {
             assert_eq!(last.battery, Some(55));
             assert_eq!(last.model, Some("BlackShark V2 Pro"));
             assert!(!last.features.game_chat && !last.features.noise);
-            // Link and battery only: sidetone was never read on this device,
-            // mic mute only ever pushed, and game/chat and noise do not exist.
+            // The opening e1 request (S26), then link and battery only:
+            // sidetone was never read on this device, mic mute only ever
+            // pushed, and game/chat and noise do not exist.
             let reads: Vec<u8> = b.writes().iter().map(|w| w[10]).collect();
-            assert_eq!(reads, vec![0x20, 0x21]);
+            assert_eq!(reads, vec![0xE1, 0x20, 0x21]);
         }
 
         #[test]
@@ -570,7 +571,11 @@ mod tests {
 
             let states = run_commands(&b, vec![Command::SetSidetone(13)]);
             let cmds: Vec<u8> = b.writes().iter().map(|w| w[10]).collect();
-            assert_eq!(cmds, vec![0x20, 0x98, 0x99], "no read-back is invented");
+            assert_eq!(
+                cmds,
+                vec![0xE1, 0x20, 0x98, 0x99],
+                "no read-back is invented"
+            );
             let last = states.last().unwrap();
             assert_eq!(last.sidetone, Some(13));
             assert!(last.sidetone_unconfirmed);

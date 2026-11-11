@@ -9,13 +9,15 @@ All notable changes to this project are documented here. The format follows
 ### Added
 
 - **Razer BlackShark V2 Pro (`0x1532` / `0x0555`) support.** Its protocol was established
-  from 23 capture sessions of Synapse driving the contributor's own headset, recorded in
+  from 26 capture sessions of Synapse driving the contributor's own headset, recorded in
   `docs/device-research-blackshark-v2-pro.md`, and nothing was carried over from the V3 Pro
   without a session of its own. It differs from the V3 Pro in transport (interrupt OUT
   rather than `SET_REPORT`), framing (several messages per report, no checksum), and
-  features. Verified on hardware: reads of link, battery, power-saving, do not disturb and
-  EQ preset and bank; do not disturb written and read back both ways; a sidetone write
-  acknowledged.
+  features. It works without Synapse: a freshly plugged-in dongle answers only the link
+  read until it has seen Synapse's `e1` request, so a session opens with that request, as
+  captured. Verified on hardware with Synapse closed and the dongle freshly plugged in:
+  reads of link, battery, power-saving, do not disturb and EQ preset and bank; do not
+  disturb written and read back both ways; sidetone set from the tray and heard.
 - `headsetctl get/set` gain `power-saving`, `do-not-disturb`, `eq-preset`, `eq-bank` and
   `mic-eq`, for the device that has them.
 

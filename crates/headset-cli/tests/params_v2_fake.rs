@@ -52,9 +52,32 @@ fn set(b: &FakeHidBackend, name: &str, value: u8) -> anyhow::Result<String> {
     )
 }
 
-/// The command byte of every write that reached the wire, in order.
+/// Every write except the session's opening `e1` request (family `0E`), which
+/// a read-write session sends before anything else; see
+/// `the_session_opens_with_the_observed_e1_request`.
+fn requests(b: &FakeHidBackend) -> Vec<Vec<u8>> {
+    b.writes().into_iter().filter(|w| w[7] != 0x0E).collect()
+}
+
+/// The command byte of every parameter request that reached the wire, in order.
 fn commands(b: &FakeHidBackend) -> Vec<u8> {
-    b.writes().iter().map(|w| w[10]).collect()
+    requests(b).iter().map(|w| w[10]).collect()
+}
+
+#[test]
+fn the_session_opens_with_the_observed_e1_request() {
+    // S26: a cold dongle answers nothing but the link read until it has seen
+    // this, so it must precede the first parameter request.
+    let b = backend_with(vec![report(0x21, RESPONSE, &[0x37])]);
+    get(&b, "battery").unwrap();
+    let writes = b.writes();
+    assert_eq!(writes.len(), 2);
+    assert_eq!(
+        &writes[0][..12],
+        &[0x02, 0x80, 0x07, 0x00, 0x00, 0x50, 0x41, 0x0e, 0x00, 0x02, 0xe1, 0x01]
+    );
+    assert!(writes[0][12..].iter().all(|&x| x == 0));
+    assert_eq!(writes[1][10], 0x21);
 }
 
 #[test]
@@ -77,7 +100,7 @@ fn a_parameter_only_ever_written_is_not_read() {
     let err = get(&b, "sidetone").unwrap_err().to_string();
     assert!(err.contains("never observed being read"), "{err}");
     assert!(err.contains("only ever wrote it"), "{err}");
-    assert!(b.writes().is_empty(), "no read invented for it");
+    assert!(requests(&b).is_empty(), "no read invented for it");
 }
 
 #[test]
@@ -85,7 +108,7 @@ fn a_parameter_only_ever_pushed_is_not_read() {
     let b = backend_with(vec![]);
     let err = get(&b, "mic-mute").unwrap_err().to_string();
     assert!(err.contains("as an event"), "{err}");
-    assert!(b.writes().is_empty());
+    assert!(requests(&b).is_empty());
 }
 
 #[test]
@@ -107,7 +130,7 @@ fn a_parameter_this_device_does_not_have_is_named_as_such() {
     .unwrap_err()
     .to_string();
     assert!(err.contains("not established"), "{err}");
-    assert!(b.writes().is_empty());
+    assert!(requests(&b).is_empty());
 }
 
 #[test]
@@ -118,8 +141,8 @@ fn sidetone_sends_the_observed_preamble_and_says_it_cannot_confirm() {
     ]);
     let out = set(&b, "sidetone", 13).unwrap();
     assert_eq!(commands(&b), vec![0x98, 0x99], "S04: 98 01 before every 99");
-    assert_eq!(b.writes()[0][13], 0x01);
-    assert_eq!(b.writes()[1][13], 13);
+    assert_eq!(requests(&b)[0][13], 0x01);
+    assert_eq!(requests(&b)[1][13], 13);
     assert!(out.contains("unconfirmed"), "{out}");
     assert!(
         !out.contains("sidetone: 13\n"),
@@ -164,7 +187,7 @@ fn power_saving_refuses_a_timeout_the_slider_never_produced() {
         let b = backend_with(vec![]);
         let err = set(&b, "power-saving", value).unwrap_err().to_string();
         assert!(err.contains("never observed taking"), "{value}: {err}");
-        assert!(b.writes().is_empty(), "{value} must not be sent");
+        assert!(requests(&b).is_empty(), "{value} must not be sent");
     }
 }
 
@@ -199,7 +222,7 @@ fn the_eq_preset_cannot_be_written_on_its_own() {
     let b = backend_with(vec![]);
     let err = set(&b, "eq-preset", 0x07).unwrap_err().to_string();
     assert!(err.contains("longer sequence"), "{err}");
-    assert!(b.writes().is_empty());
+    assert!(requests(&b).is_empty());
 }
 
 #[test]
@@ -219,7 +242,7 @@ fn the_serial_parameter_is_refused() {
     };
     let err = params::run_param(&b, &args, false).unwrap_err().to_string();
     assert!(err.contains("not in the observed read allowlist"), "{err}");
-    assert!(b.writes().is_empty());
+    assert!(requests(&b).is_empty());
 }
 
 #[test]

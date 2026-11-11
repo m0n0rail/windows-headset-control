@@ -245,4 +245,12 @@ pub trait Codec: Sync {
     fn link_answered_without_headset(&self) -> bool {
         false
     }
+
+    /// A report the vendor software was observed sending before its first
+    /// request, which the device needs before it answers requests at all.
+    /// A read-write session sends it once, as is, when it opens, and does not
+    /// wait for an answer. Defaults to none.
+    fn session_open(&self) -> Option<Vec<u8>> {
+        None
+    }
 }

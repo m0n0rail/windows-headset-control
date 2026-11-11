@@ -268,7 +268,8 @@ These were seen on the wire. None is named, and none may be assumed to mean anyt
 - **Reads:** `0x00` (15-byte ASCII string with the shape of the device serial: **never log or publish
   it**), `0x01` (`00`), `0x02` (24 bytes, beginning `02 06 0b 00 02 06 0b 00`), `0x1e` (see above),
   `0x2a` (`00`; also pushed as an event).
-- **Writes:** `0x9e` (`01`, `00` at startup and reconnect).
+- **Writes:** `0x9e` (`00` at startup and reconnect, `01` when Synapse quits; see
+  [the `e1` section](#the-dongle-forwards-only-after-an-e1-request-2026-11-11)).
 - **Other families:** `e1` requests (family `0E`), the `GET_REPORT` exchange, and device families `01`,
   `0E` and `11` beyond the power event.
 
@@ -289,8 +290,45 @@ with `headsetctl`, Synapse running, after the user approved each write:
 | `set do-not-disturb 0` | written, read back `0` | — |
 | `set sidetone 13` | `98 01` and `99 0d` both acknowledged `00` | the existing level, so no audible change |
 
-The interrupt-OUT write path therefore works as observed: the device answered every request
-on endpoint `0x83` without the `e1` request or the `GET_REPORT` exchange Synapse adds.
+The interrupt-OUT write path therefore works as observed. The device answered every request
+on endpoint `0x83` without the `e1` request or the `GET_REPORT` exchange Synapse adds, **but
+only because Synapse had already run since the dongle was plugged in**. See the next section.
+
+## The dongle forwards only after an `e1` request (2026-11-11)
+
+A test on a second machine found that sidetone set from the tray worked only while Synapse ran.
+Sessions 24–26 and the checks around them, all with the user listening, established:
+
+- **On a cold dongle, only the link read is answered.** After the dongle was replugged with
+  Synapse closed, `0x20` was answered at once, but reads of `0x21` and `0x1e`, and the `0x98`
+  write, went out on `0x02` with no reply on `0x83` at all (S25). A headset power cycle didn't
+  change that. The state belongs to the dongle, not the headset.
+- **Synapse sends `e1 01` first.** Starting Synapse against that cold dongle (S26), its first
+  `e1 01` request (`02 80 07 00 00 50 41 0e 00 02 e1 01`, answered with a family-`01` message
+  `0e 80 00 …`) came before any read that was answered. Its very first `0x21` read was answered
+  immediately.
+- **One `e1 01` is enough.** On a cold dongle again, a single `e1 01` frame, sent alone with no
+  `GET_REPORT`, made `0x21` (→ 47) and `0x1e` answer. It stayed that way for later processes, and
+  a sidetone write of `0` then `15` was then heard at the headset with Synapse closed.
+- **The state persists until the dongle is reset.** Once Synapse or the `e1` frame had
+  initialised the dongle, reads kept working after Synapse quit and across headset power cycles.
+  A replug undoes it.
+
+A host that wants anything beyond link state therefore has to send `e1 01` before its first
+request. What `e1` means beyond that is not established, and nothing else in family `0E` is
+licensed by it.
+
+**`0x1e` / `0x9e` is not the cause.** Synapse writes `9e 00` when it starts and on every
+reconnect, and `9e 01` (twice) when it quits (S02, S24). `0x1e` reads `00` while Synapse runs and
+`01` after it quits. Sidetone was heard with `0x1e` at `01` and silent once with it at `00`, so
+it does not gate sidetone. Its meaning remains unknown.
+
+**One observation remains unexplained.** Directly after Synapse quit (dongle still
+initialised), two acknowledged sidetone writes were not heard, with `0x1e` at `01` and then at
+`00`. Sidetone became audible after the user opened the headset microphone in Windows'
+sound settings, and stayed controllable from then on, including after a headset power cycle.
+This could not be reproduced: after the replug and `e1`, sidetone worked without that step.
+Synapse's PC-side microphone processing is a plausible factor; it is not established.
 
 **With the headset switched off, the dongle answered nothing.** The same reads, run while
 the headset was off, all went unanswered, `0x20` included. This differs from the V3 Pro,
@@ -340,3 +378,6 @@ Established by observing that the action produced **no** vendor traffic:
 | 21 | Power cycle (off 42 s), UI % noted before, at reconnect and after | `0x21` reads high at reconnect and settles; `0x20 = 1` event on power-on |
 | 22 | Every enhancement slider swept end to end, released at each end | Out of scope: no vendor or UAC traffic in 82 s |
 | 23 | Mic section only: voice gate, volume normalization, vocal clarity and mic noise cancellation each switched on and its slider moved | Repeats S22: no vendor or UAC traffic |
+| 24 | Synapse quit | `0x1e` read, then `9e 01` twice |
+| 25 | Cold dongle (replugged, Synapse closed): reads, headset power cycle | Only `0x20` answered; no `0x83` reply to anything else |
+| 26 | Synapse started against the cold dongle | `e1 01` precedes the first answered read |

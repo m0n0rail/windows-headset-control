@@ -113,14 +113,22 @@ impl ControlSession {
     pub fn open(backend: &dyn HidBackend) -> Result<Self, DeviceError> {
         let ResolvedControl { info, profile } = resolve_control(backend)?;
         let transport = backend.open(&info.id, OpenMode::ReadWrite(profile.write_method))?;
-        Ok(Self {
+        let mut session = Self {
             transport,
             info,
             profile,
             last_request: None,
             exchange_timeout: DEFAULT_EXCHANGE_TIMEOUT,
             pending_events: Vec::new(),
-        })
+        };
+        // Some dongles answer nothing until they have seen the vendor
+        // software's opening request. Its answer is outside the parameter
+        // family, so the next exchange skips it like any other such report.
+        if let Some(report) = profile.codec.session_open() {
+            session.transport.write_report(&report)?;
+            session.last_request = Some(Instant::now());
+        }
+        Ok(session)
     }
 
     /// Opens read-only, for listening without the ability to write.
@@ -524,6 +532,20 @@ mod tests {
         }
 
         #[test]
+        fn the_session_sends_the_opening_request_first_and_only_once() {
+            let b = FakeHidBackend::from_fixture_str(FIXTURE).unwrap();
+            let _s = ControlSession::open(&b).unwrap();
+            assert_eq!(b.writes(), vec![V2_PRO.session_open().unwrap()]);
+        }
+
+        #[test]
+        fn a_read_only_session_sends_nothing() {
+            let b = FakeHidBackend::from_fixture_str(FIXTURE).unwrap();
+            let _s = ControlSession::open_read_only(&b).unwrap();
+            assert!(b.writes().is_empty());
+        }
+
+        #[test]
         fn a_read_puts_the_captured_bytes_on_the_wire_and_returns_the_value() {
             let mut b = FakeHidBackend::from_fixture_str(FIXTURE).unwrap();
             let info = resolve_control_device(&b).unwrap();
@@ -534,7 +556,7 @@ mod tests {
             let f = s.exchange(&req, 0x21, false).unwrap();
             assert_eq!(f.value(), Some(0x37));
             assert_eq!(
-                &b.writes()[0][..13],
+                &b.writes()[1][..13],
                 &[0x02, 0x80, 0x08, 0x00, 0x00, 0x50, 0x41, 0x08, 0x00, 0x03, 0x21, 0x00, 0x00],
                 "S03: the battery read Synapse sent"
             );
