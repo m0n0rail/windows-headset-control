@@ -98,18 +98,35 @@ pub const DONGLE_LOCAL: [u8; 1] = [0x20];
 /// alone was never seen on the wire.
 pub const SIDETONE_ENABLE: u8 = 0x18;
 
-/// The V3 Pro's identifier for each named parameter. Every one is mapped: the
-/// vocabulary in [`Param`] was first established on this device.
-pub fn param_id(param: Param) -> u8 {
+/// The V3 Pro's identifier for a named parameter, where one was established.
+pub fn mapped_id(param: Param) -> Option<u8> {
     match param {
-        Param::LinkState => 0x20,
-        Param::Battery => 0x21,
-        Param::Sidetone => 0x19,
-        Param::GameChatBalance => 0x5C,
-        Param::MicMute => 0x55,
-        Param::SliderFunction => 0x6A,
-        Param::NoiseCancellation => 0x12,
+        Param::LinkState => Some(0x20),
+        Param::Battery => Some(0x21),
+        Param::Sidetone => Some(0x19),
+        Param::GameChatBalance => Some(0x5C),
+        Param::MicMute => Some(0x55),
+        Param::SliderFunction => Some(0x6A),
+        Param::NoiseCancellation => Some(0x12),
+        // Established on other devices only. Nothing on this one was observed
+        // carrying them.
+        Param::PowerSavingTimeout
+        | Param::DoNotDisturb
+        | Param::EqPreset
+        | Param::EqBank
+        | Param::MicEqMode => None,
     }
+}
+
+/// [`mapped_id`] for a parameter the V3 Pro is known to have.
+///
+/// # Panics
+///
+/// On a parameter the V3 Pro has no identifier for. For code and tests that
+/// name V3 Pro parameters directly; anything generic goes through
+/// [`Codec::id`].
+pub fn param_id(param: Param) -> u8 {
+    mapped_id(param).unwrap_or_else(|| panic!("the V3 Pro has no identifier for {}", param.name()))
 }
 
 /// Inclusive value range, where one was established by observing the control
@@ -124,7 +141,7 @@ pub fn param_range(param: Param) -> Option<(u8, u8)> {
         // Noise cancellation carries two bytes, neither of which is "the"
         // value this range would bound; `noise::ANC_LEVEL_RANGE` bounds the
         // level alone.
-        Param::LinkState | Param::SliderFunction | Param::NoiseCancellation => None,
+        _ => None,
     }
 }
 
@@ -327,7 +344,7 @@ impl Codec for V3Pro {
     }
 
     fn id(&self, param: Param) -> Option<u8> {
-        Some(param_id(param))
+        mapped_id(param)
     }
 
     fn range(&self, param: Param) -> Option<(u8, u8)> {
@@ -372,6 +389,21 @@ impl Codec for V3Pro {
 
     fn write_result(&self, ack: &ParamFrame) -> Option<ResultCode> {
         ack.value().map(result_code)
+    }
+
+    /// The dongle answers a read of a headset-proxied parameter with the same
+    /// `0xff` it uses to refuse a write when the headset is not reachable.
+    /// Observed directly: with the headset powered off, `link` reported `00 00`
+    /// while every other parameter returned a lone `0xff` in the same session.
+    fn read_refused(&self, param: Param, reply: &ParamFrame) -> bool {
+        param != Param::LinkState && reply.value() == Some(0xFF)
+    }
+
+    /// `0x20` is dongle-local: with the headset powered off it still answered
+    /// `00 00` while every proxied parameter returned `0xff`
+    /// (`docs/device-research.md`, Reads while the headset is off).
+    fn link_answered_without_headset(&self) -> bool {
+        true
     }
 }
 
@@ -614,7 +646,7 @@ mod tests {
         // fail here, which is the prompt to update both documents.
         let named = READ_ALLOWLIST
             .iter()
-            .filter(|id| Param::ALL.iter().any(|p| param_id(*p) == **id))
+            .filter(|id| Param::ALL.iter().any(|p| mapped_id(*p) == Some(**id)))
             .count();
         let unnamed = READ_ALLOWLIST.len() - named;
         assert_eq!(
@@ -628,11 +660,13 @@ mod tests {
     #[test]
     fn named_parameters_are_all_readable() {
         for p in Param::ALL {
-            assert!(
-                READ_ALLOWLIST.contains(&param_id(p)),
-                "{} is named but not readable",
-                p.name()
-            );
+            if let Some(id) = mapped_id(p) {
+                assert!(
+                    READ_ALLOWLIST.contains(&id),
+                    "{} is named but not readable",
+                    p.name()
+                );
+            }
             assert_eq!(Param::from_name(p.name()), Some(p));
         }
     }
@@ -676,7 +710,7 @@ mod tests {
 
     #[test]
     fn the_codec_maps_every_identifier_back_to_its_name() {
-        for p in Param::ALL {
+        for p in Param::ALL.into_iter().filter(|p| mapped_id(*p).is_some()) {
             assert_eq!(V3_PRO.param_for(param_id(p)), Some(p));
         }
         assert_eq!(V3_PRO.param_for(0x2C), None, "observed but unnamed");

@@ -5,6 +5,12 @@ use windows::Win32::Foundation::HANDLE;
 use super::ffi;
 use crate::backend::HidTransport;
 use crate::error::DeviceError;
+use crate::model::WriteMethod;
+
+/// How long an interrupt write may stay pending. A report this size completes
+/// in a millisecond or two when the dongle is listening; anything near this
+/// means it is not, and the caller is told rather than left waiting.
+const WRITE_TIMEOUT: Duration = Duration::from_millis(1000);
 
 /// A handle to one HID collection.
 ///
@@ -17,7 +23,8 @@ pub struct WindowsTransport {
     handle: HANDLE,
     input_report_len: u16,
     output_report_len: u16,
-    writable: bool,
+    /// `None` on a read-only handle.
+    write_method: Option<WriteMethod>,
 }
 
 impl WindowsTransport {
@@ -26,7 +33,7 @@ impl WindowsTransport {
             handle,
             input_report_len,
             output_report_len: 0,
-            writable: false,
+            write_method: None,
         }
     }
 
@@ -34,12 +41,13 @@ impl WindowsTransport {
         handle: HANDLE,
         input_report_len: u16,
         output_report_len: u16,
+        write_method: WriteMethod,
     ) -> Self {
         Self {
             handle,
             input_report_len,
             output_report_len,
-            writable: true,
+            write_method: Some(write_method),
         }
     }
 }
@@ -64,9 +72,9 @@ impl HidTransport for WindowsTransport {
     }
 
     fn write_report(&self, buf: &[u8]) -> Result<(), DeviceError> {
-        if !self.writable {
+        let Some(method) = self.write_method else {
             return Err(DeviceError::WriteNotSupported);
-        }
+        };
         // Windows requires the buffer to be exactly the declared output report
         // length; a short buffer is rejected by the HID stack with an error that
         // does not name the real cause.
@@ -77,7 +85,10 @@ impl HidTransport for WindowsTransport {
                 self.output_report_len
             )));
         }
-        ffi::write_output_report(self.handle, buf)
+        match method {
+            WriteMethod::SetOutputReport => ffi::write_output_report(self.handle, buf),
+            WriteMethod::InterruptOut => ffi::write_with_timeout(self.handle, buf, WRITE_TIMEOUT),
+        }
     }
 
     fn output_report_len(&self) -> u16 {

@@ -63,12 +63,17 @@ workspace may assume about that product:
 - its vendor and product id, which is how it is recognised;
 - the `ControlShape` its protocol was measured on — the control collection's usage page
   and report lengths;
+- the `WriteMethod` its vendor software was observed using: `SetOutputReport`
+  (`HidD_SetOutputReport`, a control-pipe `SET_REPORT`) or `InterruptOut` (`WriteFile`);
 - the `Codec` that encodes and parses its reports.
 
 `Codec` (in `headset-protocol`) is the seam between devices. It maps the shared `Param`
 vocabulary to that device's identifiers and ranges, holds its read and write allowlists and
 any write preamble the vendor software was observed sending, and parses one input report
-into the `ParamFrame`s it carries — zero or one for the V3 Pro. A device with no evidence
+into the `ParamFrame`s it carries — zero or one for the V3 Pro, several for the V2 Pro. It
+also says which named parameters can be read (some were only ever written or only ever
+pushed), which values are accepted, which reply means "refused", and whether the dongle
+answers the link read on its own. A device with no evidence
 for a parameter does not map it, which is how "this device has no such setting" is
 expressed; nothing reaches an identifier by assuming two devices share one.
 
@@ -77,8 +82,12 @@ expressed; nothing reaches an identifier by assuming two devices share one.
 name a device's identifiers directly.
 
 Adding a product means adding a profile and, when its protocol differs, a codec module —
-each backed by its own capture evidence in `docs/`. The BlackShark V3 Pro (`0x1532` /
-`0x101B`, codec `v3pro`) is currently the only profile.
+each backed by its own capture evidence in `docs/`. There are two profiles: the BlackShark
+V3 Pro (`0x1532` / `0x101B`, codec `v3pro`) and the BlackShark V2 Pro (`0x1532` / `0x0555`,
+codec `v2pro`).
+
+The tray reads a small `Features` record from the codec — which controls the device has,
+and whether sidetone can be read back — and draws only those.
 
 ## Control device resolution
 
@@ -108,7 +117,7 @@ framing applies.
   collection belonging to the headset this project actually supports, if that unrelated
   collection happens to declare a wider report.
 - `is_supported_device` positively identifies the products this project has a profile for
-  (`PROFILES` in `profile.rs`; currently only `0x1532` / `0x101B`).
+  (`PROFILES` in `profile.rs`: `0x1532` / `0x101B` and `0x1532` / `0x0555`).
 
 **Automatic candidate selection must always be scoped to `is_supported_device`, never to
 shape-based ranking alone.** `headsetctl probe`'s default (no `--candidate`) path applies

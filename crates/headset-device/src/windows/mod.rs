@@ -72,7 +72,7 @@ impl HidBackend for WindowsHidBackend {
                 let h = ffi::open_for_read(info.id.raw())?;
                 Ok(Box::new(WindowsTransport::new(h, info.input_report_len)))
             }
-            OpenMode::ReadWrite => {
+            OpenMode::ReadWrite(method) => {
                 // A collection with no output report cannot be written to; say
                 // so here rather than letting the write fail later with a
                 // Windows error that does not name the cause.
@@ -86,6 +86,7 @@ impl HidBackend for WindowsHidBackend {
                     h,
                     info.input_report_len,
                     info.output_report_len,
+                    method,
                 )))
             }
         }

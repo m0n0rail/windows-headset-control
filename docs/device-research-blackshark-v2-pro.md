@@ -272,6 +272,35 @@ These were seen on the wire. None is named, and none may be assumed to mean anyt
 - **Other families:** `e1` requests (family `0E`), the `GET_REPORT` exchange, and device families `01`,
   `0E` and `11` beyond the power event.
 
+## Hardware verification of the implementation (2026-11-11)
+
+The codec in `crates/headset-protocol/src/v2pro` was run against the contributor's headset
+with `headsetctl`, Synapse running, after the user approved each write:
+
+| Command | Result | Agreed with |
+| --- | --- | --- |
+| `get link` | `connected` | the headset was on |
+| `get battery` | `54` | the trend of the readings above |
+| `get power-saving` | `0` (off) | the Synapse setting |
+| `get do-not-disturb` | `0` (off) | the Synapse setting |
+| `get eq-bank` | `1` (standard) | the Synapse setting |
+| `get eq-preset` | `255` (custom) | the Synapse setting |
+| `set do-not-disturb 1`, then `get` | written, read back `1` | — |
+| `set do-not-disturb 0` | written, read back `0` | — |
+| `set sidetone 13` | `98 01` and `99 0d` both acknowledged `00` | the existing level, so no audible change |
+
+The interrupt-OUT write path therefore works as observed: the device answered every request
+on endpoint `0x83` without the `e1` request or the `GET_REPORT` exchange Synapse adds.
+
+**With the headset switched off, the dongle answered nothing.** The same reads, run while
+the headset was off, all went unanswered, `0x20` included. This differs from the V3 Pro,
+whose dongle answers the link read on its own. On this device, silence on `0x20` is
+therefore indistinguishable from a wedged dongle, and the tray reports it as disconnected
+rather than advising a replug. (Not captured with USBPcap: the short capture produced no
+file, because USBPcap buffers until there is enough traffic and nothing was streaming. The
+observation is the CLI's timeouts, and the immediate success of the same reads once the
+headset was switched on.)
+
 ## Out of scope: not in the vendor protocol
 
 Established by observing that the action produced **no** vendor traffic:

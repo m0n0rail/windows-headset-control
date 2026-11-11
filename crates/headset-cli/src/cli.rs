@@ -77,13 +77,16 @@ pub fn parse_value(s: &str) -> Result<u8, String> {
 
 #[derive(Args, Debug)]
 pub struct GetArgs {
-    /// One of: battery, sidetone, game-chat, mic-mute, slider-function, link.
+    /// A parameter name: link, battery, sidetone, mic-mute, game-chat,
+    /// slider-function, noise-cancellation, power-saving, do-not-disturb,
+    /// eq-preset, eq-bank, mic-eq. Which ones exist depends on the headset.
     pub name: String,
 }
 
 #[derive(Args, Debug)]
 pub struct SetArgs {
-    /// One of: sidetone, game-chat, slider-function.
+    /// A writable parameter: sidetone, game-chat and slider-function on the
+    /// V3 Pro; sidetone, power-saving, do-not-disturb and mic-eq on the V2 Pro.
     pub name: String,
 
     /// The value to write.

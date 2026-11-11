@@ -109,6 +109,21 @@ impl CollectionInfo {
     }
 }
 
+/// How a writable handle puts an output report on the wire.
+///
+/// Per device, because it is whatever the vendor software was observed doing:
+/// two devices whose reports look alike can still be written differently, and
+/// a write the device was never seen receiving is not sent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriteMethod {
+    /// `HidD_SetOutputReport`: a control-pipe `SET_REPORT`. The BlackShark V3
+    /// Pro (`docs/device-research.md`, Transport correction).
+    SetOutputReport,
+    /// `WriteFile`: an interrupt OUT transfer. The BlackShark V2 Pro
+    /// (`docs/device-research-blackshark-v2-pro.md`, Transport).
+    InterruptOut,
+}
+
 /// How a collection should be opened.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OpenMode {
@@ -125,14 +140,14 @@ pub enum OpenMode {
     /// Phase 1 named this variant for the access it would eventually grant
     /// while requesting read only. The write phase makes the name true; callers
     /// that want the old behaviour want `Read`.
-    ReadWrite,
+    ReadWrite(WriteMethod),
 }
 
 impl OpenMode {
     /// Whether this mode performs I/O at all. Used to decide when opening the
     /// audio-stack collection must be refused.
     pub fn performs_io(self) -> bool {
-        matches!(self, OpenMode::Read | OpenMode::ReadWrite)
+        matches!(self, OpenMode::Read | OpenMode::ReadWrite(_))
     }
 }
 

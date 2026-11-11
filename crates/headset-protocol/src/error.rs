@@ -50,4 +50,7 @@ pub enum ProtocolError {
 
     #[error("unknown role byte {role:#04x}")]
     UnknownRole { role: u8 },
+
+    #[error("malformed message at byte {offset}: {why}")]
+    MalformedMessage { offset: usize, why: &'static str },
 }

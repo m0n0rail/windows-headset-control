@@ -16,7 +16,7 @@ use headset_device::{ControlSession, DeviceError, HidBackend};
 use headset_protocol::v3pro::noise::{noise_write_payload, NoiseControl};
 use headset_protocol::{Codec, Param, ParamFrame, ResultCode};
 
-use crate::state::HeadsetState;
+use crate::state::{Features, HeadsetState};
 
 /// How long to sit in `listen` between polls. Events arrive on their own, so
 /// this is not a polling interval for values — it is how often the thread wakes
@@ -85,6 +85,8 @@ pub fn run<B: HidBackend, F: Fn(HeadsetState)>(
                     // Take the name from the descriptor the moment the device
                     // resolves, so the header is right before any read lands.
                     state.device_name = s.info().product.clone();
+                    state.model = Some(s.profile().name);
+                    state.features = Features::of(s.codec());
                     session = Some(s);
                     since_refresh = Duration::ZERO;
                     refresh_due = Duration::ZERO; // read immediately
@@ -125,7 +127,18 @@ pub fn run<B: HidBackend, F: Fn(HeadsetState)>(
                     // Silence is the wedged-dongle signature and is reported.
                     // Any other non-fatal error is still just logged: it means
                     // the device answered, so it is talking.
-                    if matches!(e, DeviceError::NoResponse { .. }) {
+                    if matches!(e, DeviceError::NoResponse { .. })
+                        && !s.codec().link_answered_without_headset()
+                    {
+                        // On this device the dongle does not answer for itself,
+                        // so silence is what a headset that is off or out of
+                        // range looks like. Advising a replug would be wrong
+                        // every time the headset is simply switched off.
+                        if state.connected != Some(false) {
+                            state.mark_disconnected();
+                            notify(state.clone());
+                        }
+                    } else if matches!(e, DeviceError::NoResponse { .. }) {
                         silent_reads = silent_reads.saturating_add(1);
                         if silent_reads >= SILENCE_THRESHOLD && !state.dongle_silent {
                             tracing::warn!(
@@ -154,7 +167,17 @@ pub fn run<B: HidBackend, F: Fn(HeadsetState)>(
                         session = None;
                         continue;
                     }
-                    tracing::warn!("command failed: {e}");
+                    if matches!(e, DeviceError::NoResponse { .. })
+                        && !s.codec().link_answered_without_headset()
+                    {
+                        // Same reading as the timed refresh: on this device,
+                        // silence is a headset that is off. Expected, so not a
+                        // warning, and the panel says so.
+                        state.mark_disconnected();
+                        tracing::debug!("command unanswered; headset unreachable: {e}");
+                    } else {
+                        tracing::warn!("command failed: {e}");
+                    }
                 }
                 notify(state.clone());
                 continue;
@@ -203,14 +226,15 @@ fn is_fatal(e: &DeviceError) -> bool {
 }
 
 /// Reads one named parameter into `state`. A parameter the device has no
-/// identifier for is left unknown rather than read under another's id.
+/// identifier for, or was never observed answering a read of, is left as it is
+/// rather than read under another's id or with an invented request.
 fn read_into(
     s: &mut ControlSession,
     param: Param,
     state: &mut HeadsetState,
 ) -> Result<(), DeviceError> {
     let codec = s.codec();
-    let Some(id) = codec.id(param) else {
+    let Some(id) = codec.id(param).filter(|_| codec.is_readable(param)) else {
         return Ok(());
     };
     let req = codec
@@ -276,7 +300,15 @@ fn apply(
         Command::SetSidetone(v) => {
             write_param(s, Param::Sidetone, &[v])?;
             // Read back rather than assuming: the device is the source of truth.
-            read_into(s, Param::Sidetone, state)
+            if s.codec().is_readable(Param::Sidetone) {
+                return read_into(s, Param::Sidetone, state);
+            }
+            // No read of it was ever observed on this device. Show what was
+            // sent and acknowledged, marked as such, rather than either
+            // inventing a read or leaving the slider blank after a change.
+            state.sidetone = Some(v);
+            state.sidetone_unconfirmed = true;
+            Ok(())
         }
         Command::SetGameChat(v) => {
             write_param(s, Param::GameChatBalance, &[v])?;
@@ -468,5 +500,107 @@ mod tests {
         assert_eq!(last.sidetone, None);
         assert_eq!(last.noise, None);
         assert!(!last.tooltip().contains("255"), "{}", last.tooltip());
+    }
+
+    mod v2_pro {
+        use super::*;
+
+        const FIXTURE: &str =
+            include_str!("../../headset-device/tests/fixtures/blackshark-v2-pro.json");
+
+        /// One report holding one family-08 message, shaped as the V2 Pro
+        /// was observed shaping them.
+        fn report(cmd: u8, role: u8, value: &[u8]) -> Vec<u8> {
+            let mut msg = vec![0x50, 0x49, 0x08, 0xC0, 0x11, 0x22, 0x33, 0x00];
+            msg.push(3 + value.len() as u8);
+            msg.push(0x00);
+            msg.extend([cmd, role, value.len() as u8]);
+            msg.extend_from_slice(value);
+            let mut r = vec![0u8; CONTROL_REPORT_LEN];
+            r[0] = 0x02;
+            r[1] = msg.len() as u8;
+            r[2..2 + msg.len()].copy_from_slice(&msg);
+            r
+        }
+
+        fn run_commands(b: &FakeHidBackend, cmds: Vec<Command>) -> Vec<HeadsetState> {
+            let (tx, rx) = mpsc::channel();
+            for c in cmds {
+                tx.send(c).unwrap();
+            }
+            tx.send(Command::Shutdown).unwrap();
+            let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let sink = seen.clone();
+            run(b, rx, move |s| sink.lock().unwrap().push(s));
+            let out = seen.lock().unwrap().clone();
+            out
+        }
+
+        #[test]
+        fn a_refresh_reads_only_what_this_device_answers() {
+            let mut b = FakeHidBackend::from_fixture_str(FIXTURE).unwrap();
+            let info = resolve_control_device(&b).unwrap();
+            b.push_read(&info.id, report(0x20, 0x01, &[0x01]));
+            b.push_read(&info.id, report(0x21, 0x01, &[0x37]));
+
+            let states = run_to_completion(&b);
+            let last = states.last().unwrap();
+            assert_eq!(last.connected, Some(true));
+            assert_eq!(last.battery, Some(55));
+            assert_eq!(last.model, Some("BlackShark V2 Pro"));
+            assert!(!last.features.game_chat && !last.features.noise);
+            // Link and battery only: sidetone was never read on this device,
+            // mic mute only ever pushed, and game/chat and noise do not exist.
+            let reads: Vec<u8> = b.writes().iter().map(|w| w[10]).collect();
+            assert_eq!(reads, vec![0x20, 0x21]);
+        }
+
+        #[test]
+        fn setting_sidetone_sends_the_preamble_and_marks_the_level_unconfirmed() {
+            let mut b = FakeHidBackend::from_fixture_str(FIXTURE).unwrap();
+            let info = resolve_control_device(&b).unwrap();
+            for r in [
+                // The startup refresh, cut short by a link that is down.
+                report(0x20, 0x01, &[0x00]),
+                report(0x98, 0x01, &[0x00]),
+                report(0x99, 0x01, &[0x00]),
+            ] {
+                b.push_read(&info.id, r);
+            }
+
+            let states = run_commands(&b, vec![Command::SetSidetone(13)]);
+            let cmds: Vec<u8> = b.writes().iter().map(|w| w[10]).collect();
+            assert_eq!(cmds, vec![0x20, 0x98, 0x99], "no read-back is invented");
+            let last = states.last().unwrap();
+            assert_eq!(last.sidetone, Some(13));
+            assert!(last.sidetone_unconfirmed);
+        }
+
+        #[test]
+        fn silence_reads_as_a_headset_that_is_off_not_a_wedged_dongle() {
+            // Nothing canned: every read goes unanswered, which is what this
+            // dongle does while the headset is switched off.
+            let b = FakeHidBackend::from_fixture_str(FIXTURE).unwrap();
+            let states = run_to_completion(&b);
+            let last = states.last().unwrap();
+            assert_eq!(last.connected, Some(false));
+            assert!(
+                !last.dongle_silent,
+                "no replug advice for a headset that is off"
+            );
+        }
+
+        #[test]
+        fn a_mute_event_from_the_headset_is_understood() {
+            let mut b = FakeHidBackend::from_fixture_str(FIXTURE).unwrap();
+            let info = resolve_control_device(&b).unwrap();
+            let mut s = HeadsetState::default();
+            b.push_read(&info.id, report(0x55, 0x02, &[0x01]));
+            let mut session = ControlSession::open_read_only(&b).unwrap();
+            for e in session.listen(Duration::from_millis(300)).unwrap() {
+                s.apply(session.codec(), &e);
+            }
+            assert_eq!(s.mic_mute_hardware, Some(true));
+        }
     }
 }

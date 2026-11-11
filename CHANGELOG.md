@@ -4,6 +4,32 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Razer BlackShark V2 Pro (`0x1532` / `0x0555`) support.** Its protocol was established
+  from 23 capture sessions of Synapse driving the contributor's own headset, recorded in
+  `docs/device-research-blackshark-v2-pro.md`, and nothing was carried over from the V3 Pro
+  without a session of its own. It differs from the V3 Pro in transport (interrupt OUT
+  rather than `SET_REPORT`), framing (several messages per report, no checksum), and
+  features. Verified on hardware: reads of link, battery, power-saving, do not disturb and
+  EQ preset and bank; do not disturb written and read back both ways; a sidetone write
+  acknowledged.
+- `headsetctl get/set` gain `power-saving`, `do-not-disturb`, `eq-preset`, `eq-bank` and
+  `mic-eq`, for the device that has them.
+
+### Changed
+
+- **Device access goes through per-product profiles and codecs.** A product is supported
+  when it has a profile; its codec owns its identifiers, allowlists, ranges, framing, write
+  preamble and refusal convention. The V3 Pro's bytes on the wire are unchanged.
+- `set` and `param get/set` identify the device before validating, because the limits are
+  per device. Without a headset attached they now report the missing device instead of an
+  allowlist or range error.
+- The tray hides controls the connected headset does not have, marks a sidetone level it
+  cannot read back as `SENT`, and names the detected model in its tooltip.
+
 ## [0.2.0-alpha.4] - 2026-09-18
 
 ### Fixed

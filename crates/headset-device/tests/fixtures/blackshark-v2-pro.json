@@ -1,0 +1,37 @@
+{
+  "collections": [
+    {
+      "path": "\\\\?\\hid#vid_1532&pid_0555&mi_03&col01#0&fixture&0&0000",
+      "vendor_id": 5426, "product_id": 1365, "version": 1,
+      "usage_page": 12, "usage": 1,
+      "input_report_len": 3, "output_report_len": 0, "feature_report_len": 0,
+      "product": "Razer BlackShark V2 Pro 2.4", "manufacturer": null,
+      "has_serial": true,
+      "report_items": [
+        {"kind": "input", "report_id": 1, "usage_page": 12, "usage_min": 183, "usage_max": 183, "bit_size": 0, "report_count": 0, "is_button": true},
+        {"kind": "input", "report_id": 1, "usage_page": 12, "usage_min": 182, "usage_max": 182, "bit_size": 0, "report_count": 0, "is_button": true},
+        {"kind": "input", "report_id": 1, "usage_page": 12, "usage_min": 181, "usage_max": 181, "bit_size": 0, "report_count": 0, "is_button": true},
+        {"kind": "input", "report_id": 1, "usage_page": 12, "usage_min": 205, "usage_max": 205, "bit_size": 0, "report_count": 0, "is_button": true},
+        {"kind": "input", "report_id": 1, "usage_page": 12, "usage_min": 180, "usage_max": 180, "bit_size": 0, "report_count": 0, "is_button": true},
+        {"kind": "input", "report_id": 1, "usage_page": 12, "usage_min": 179, "usage_max": 179, "bit_size": 0, "report_count": 0, "is_button": true},
+        {"kind": "input", "report_id": 1, "usage_page": 12, "usage_min": 177, "usage_max": 177, "bit_size": 0, "report_count": 0, "is_button": true},
+        {"kind": "input", "report_id": 1, "usage_page": 12, "usage_min": 176, "usage_max": 176, "bit_size": 0, "report_count": 0, "is_button": true},
+        {"kind": "input", "report_id": 1, "usage_page": 12, "usage_min": 226, "usage_max": 226, "bit_size": 0, "report_count": 0, "is_button": true},
+        {"kind": "input", "report_id": 1, "usage_page": 12, "usage_min": 234, "usage_max": 234, "bit_size": 0, "report_count": 0, "is_button": true},
+        {"kind": "input", "report_id": 1, "usage_page": 12, "usage_min": 233, "usage_max": 233, "bit_size": 0, "report_count": 0, "is_button": true}
+      ]
+    },
+    {
+      "path": "\\\\?\\hid#vid_1532&pid_0555&mi_03&col02#0&fixture&0&0001",
+      "vendor_id": 5426, "product_id": 1365, "version": 1,
+      "usage_page": 65280, "usage": 1,
+      "input_report_len": 64, "output_report_len": 64, "feature_report_len": 0,
+      "product": "Razer BlackShark V2 Pro 2.4", "manufacturer": null,
+      "has_serial": true,
+      "report_items": [
+        {"kind": "input", "report_id": 2, "usage_page": 65280, "usage_min": 2, "usage_max": 2, "bit_size": 8, "report_count": 63, "is_button": false},
+        {"kind": "output", "report_id": 2, "usage_page": 65280, "usage_min": 3, "usage_max": 3, "bit_size": 8, "report_count": 63, "is_button": false}
+      ]
+    }
+  ]
+}

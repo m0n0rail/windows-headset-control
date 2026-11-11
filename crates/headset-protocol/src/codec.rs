@@ -30,10 +30,20 @@ pub enum Param {
     /// read and written through [`crate::v3pro::noise`] rather than as a
     /// single value.
     NoiseCancellation,
+    /// Minutes of inactivity on battery before the headset turns itself off;
+    /// `0` is off.
+    PowerSavingTimeout,
+    DoNotDisturb,
+    /// Which playback EQ preset is active.
+    EqPreset,
+    /// Which group of EQ presets [`Param::EqPreset`] selects from.
+    EqBank,
+    /// Which microphone EQ preset is active.
+    MicEqMode,
 }
 
 impl Param {
-    pub const ALL: [Param; 7] = [
+    pub const ALL: [Param; 12] = [
         Param::LinkState,
         Param::Battery,
         Param::Sidetone,
@@ -41,6 +51,11 @@ impl Param {
         Param::MicMute,
         Param::SliderFunction,
         Param::NoiseCancellation,
+        Param::PowerSavingTimeout,
+        Param::DoNotDisturb,
+        Param::EqPreset,
+        Param::EqBank,
+        Param::MicEqMode,
     ];
 
     /// CLI-facing name. Stable; used in both renderers.
@@ -53,6 +68,11 @@ impl Param {
             Param::MicMute => "mic-mute",
             Param::SliderFunction => "slider-function",
             Param::NoiseCancellation => "noise-cancellation",
+            Param::PowerSavingTimeout => "power-saving",
+            Param::DoNotDisturb => "do-not-disturb",
+            Param::EqPreset => "eq-preset",
+            Param::EqBank => "eq-bank",
+            Param::MicEqMode => "mic-eq",
         }
     }
 
@@ -141,14 +161,43 @@ pub trait Codec: Sync {
     /// validated against an invented bound.
     fn range(&self, param: Param) -> Option<(u8, u8)>;
 
+    /// Whether `value` is one this device was observed taking for `param`.
+    /// Defaults to the inclusive [`Codec::range`]; a device whose values have
+    /// gaps narrows it.
+    fn accepts(&self, param: Param, value: u8) -> bool {
+        self.range(param)
+            .is_none_or(|(lo, hi)| (lo..=hi).contains(&value))
+    }
+
+    /// Whether a read of `param` was ever observed on this device. A parameter
+    /// can be named without being readable: some were only ever written, or
+    /// only ever pushed by the device.
+    fn is_readable(&self, param: Param) -> bool {
+        self.id(param)
+            .is_some_and(|id| self.read_allowlist().contains(&id))
+    }
+
     /// Whether a write of `param` was ever observed on this device.
     fn is_writable(&self, param: Param) -> bool {
         self.id(param)
             .is_some_and(|id| self.write_allowlist().contains(&id))
     }
 
+    /// Whether `param` may be written on its own. `false` for a parameter that
+    /// was only ever written as part of a longer sequence, which a single
+    /// write would not reproduce.
+    fn standalone_write(&self, param: Param) -> bool {
+        self.is_writable(param)
+    }
+
     /// Identifiers this device was observed being read with.
     fn read_allowlist(&self) -> &'static [u8];
+
+    /// Identifiers seen only as unprompted device events: named so that an
+    /// event can be understood, never sent.
+    fn event_only(&self) -> &'static [u8] {
+        &[]
+    }
 
     /// Identifiers this device was observed being written with, as bare ids.
     fn write_allowlist(&self) -> &'static [u8];
@@ -181,4 +230,19 @@ pub trait Codec: Sync {
     /// Interprets a write acknowledgement, or `None` when it carries no single
     /// result byte.
     fn write_result(&self, ack: &ParamFrame) -> Option<ResultCode>;
+
+    /// Whether a read reply for `param` is this device's way of saying "no
+    /// value" rather than a value. Defaults to never: a refusal is a per-device
+    /// observation, and the same byte can be a real value elsewhere.
+    fn read_refused(&self, _param: Param, _reply: &ParamFrame) -> bool {
+        false
+    }
+
+    /// Whether the dongle answers a read of [`Param::LinkState`] by itself,
+    /// with the headset off. Where it does, silence on that read means the
+    /// dongle has stopped talking; where it does not, silence is what an
+    /// unreachable headset looks like, and the two cannot be told apart.
+    fn link_answered_without_headset(&self) -> bool {
+        false
+    }
 }

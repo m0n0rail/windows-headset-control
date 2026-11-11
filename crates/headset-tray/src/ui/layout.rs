@@ -392,6 +392,13 @@ impl Builder {
 
 /// Builds the panel for a given state.
 pub fn build(state: &HeadsetState, view: View, param: SliderParam, preview: Option<u8>) -> Panel {
+    // A device with no game/chat balance has only the sidetone slider, whatever
+    // the switcher last said.
+    let param = if state.features.game_chat {
+        param
+    } else {
+        SliderParam::Sidetone
+    };
     let mut b = Builder {
         p: Vec::new(),
         hits: Vec::new(),
@@ -639,24 +646,30 @@ fn main_body(
     }
 
     // ---- switcher + value --------------------------------------------------
+    // With only one slider there is nothing to switch to, so the button becomes
+    // a plain label: no swap glyph, no outline, and no click target.
+    let switchable = state.features.game_chat;
     let sw = Rect::new(MARGIN, *y, SWITCHER_W, SWITCHER_H);
-    b.p.push(Primitive::RoundRect {
-        rect: sw,
-        radius: BUTTON_RADIUS,
-        fill: None,
-        stroke: Some(b.tint(accent())),
-        stroke_w: 1.5,
-    });
-    swap_icon(b, sw.x + 16.0, sw.center_y(), b.tint(accent()));
+    if switchable {
+        b.p.push(Primitive::RoundRect {
+            rect: sw,
+            radius: BUTTON_RADIUS,
+            fill: None,
+            stroke: Some(b.tint(accent())),
+            stroke_w: 1.5,
+        });
+        swap_icon(b, sw.x + 16.0, sw.center_y(), b.tint(accent()));
+    }
+    let label_x = if switchable { sw.x + 28.0 } else { sw.x };
     b.text(
-        Rect::new(sw.x + 28.0, sw.y, sw.w - 34.0, sw.h),
+        Rect::new(label_x, sw.y, sw.right() - label_x - 6.0, sw.h),
         param.button_label(),
         FS_BODY,
         W_SEMIBOLD,
         b.tint(text_primary()),
         Align::Left,
     );
-    if !b.dim {
+    if switchable && !b.dim {
         b.hits.push((sw, HitTarget::Switcher));
     }
 
@@ -664,9 +677,19 @@ fn main_body(
         SliderParam::Sidetone => state.sidetone,
         SliderParam::GameChat => state.game_chat,
     });
+    let mut value_text = format_value(param, value);
+    // A level that was sent but cannot be read back says so, every time it is
+    // drawn. Shown as a plain number it would claim more than the device told us.
+    if param == SliderParam::Sidetone
+        && preview.is_none()
+        && state.sidetone_unconfirmed
+        && value.is_some()
+    {
+        value_text.push_str(" · SENT");
+    }
     b.text(
         Rect::new(MARGIN, sw.y, CONTENT_W, SWITCHER_H),
-        &format_value(param, value),
+        &value_text,
         FS_BODY,
         W_SEMIBOLD,
         b.tint(accent_text()),
@@ -771,7 +794,9 @@ fn main_body(
     }
     *y = label_y + 18.0 + GAP;
 
-    noise_section(b, state, y, level_track);
+    if state.features.noise {
+        noise_section(b, state, y, level_track);
+    }
 
     // ---- warning banner ----------------------------------------------------
     // A silent dongle outranks the Synapse warning. A caution that something
@@ -1622,7 +1647,91 @@ mod tests {
             mic_mute_os: Some(false),
             warn_vendor_software: true,
             dongle_silent: false,
+            model: Some("BlackShark V3 Pro"),
+            features: crate::state::Features::default(),
+            sidetone_unconfirmed: false,
         }
+    }
+
+    /// The V2 Pro as the worker leaves it: no game/chat, no noise control,
+    /// and a sidetone level the device cannot report.
+    fn v2_pro() -> HeadsetState {
+        HeadsetState {
+            device_name: Some("Razer BlackShark V2 Pro 2.4".into()),
+            model: Some("BlackShark V2 Pro"),
+            features: crate::state::Features {
+                game_chat: false,
+                noise: false,
+                sidetone_readable: false,
+            },
+            game_chat: None,
+            noise: None,
+            sidetone: None,
+            ..connected()
+        }
+    }
+
+    fn texts(p: &Panel) -> Vec<String> {
+        p.primitives
+            .iter()
+            .filter_map(|prim| match prim {
+                Primitive::Text { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_device_without_game_chat_offers_no_switcher() {
+        // Asked for game/chat, which the V2 Pro does not have: the panel draws
+        // sidetone and nothing to switch to.
+        let p = build(&v2_pro(), View::Main, SliderParam::GameChat, None);
+        let hits = targets(&p);
+        assert!(!hits.contains(&HitTarget::Switcher), "{hits:?}");
+        assert!(hits.contains(&HitTarget::SliderTrack));
+        assert_eq!(p.track.map(|t| t.param), Some(SliderParam::Sidetone));
+        assert!(texts(&p).iter().any(|t| t == "Sidetone"), "{:?}", texts(&p));
+    }
+
+    #[test]
+    fn a_device_without_noise_control_draws_no_noise_row() {
+        let p = build(&v2_pro(), View::Main, SliderParam::Sidetone, None);
+        let hits = targets(&p);
+        for t in [
+            HitTarget::NoiseOff,
+            HitTarget::NoiseAnc,
+            HitTarget::NoiseAmbient,
+            HitTarget::NoiseLevel,
+        ] {
+            assert!(!hits.contains(&t), "{t:?} drawn for a device without it");
+        }
+        assert!(p.level_track.is_none());
+        assert!(
+            p.height < build(&connected(), View::Main, SliderParam::Sidetone, None).height,
+            "the panel should shrink rather than leave a gap"
+        );
+    }
+
+    #[test]
+    fn an_unconfirmed_sidetone_level_says_it_was_sent() {
+        let mut s = v2_pro();
+        s.sidetone = Some(13);
+        s.sidetone_unconfirmed = true;
+        let p = build(&s, View::Main, SliderParam::Sidetone, None);
+        let t = texts(&p);
+        assert!(t.iter().any(|t| t.ends_with(" · SENT")), "{t:?}");
+    }
+
+    #[test]
+    fn an_unknown_sidetone_level_is_a_gap_not_a_number() {
+        let p = build(&v2_pro(), View::Main, SliderParam::Sidetone, None);
+        assert!(texts(&p).iter().any(|t| t == "--"), "{:?}", texts(&p));
+    }
+
+    #[test]
+    fn a_confirmed_level_carries_no_marker() {
+        let p = build(&connected(), View::Main, SliderParam::Sidetone, None);
+        assert!(!texts(&p).iter().any(|t| t.contains("SENT")));
     }
 
     #[test]

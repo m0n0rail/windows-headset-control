@@ -8,19 +8,58 @@
 use headset_protocol::v3pro::noise::NoiseControl;
 use headset_protocol::{Codec, Param, ParamFrame};
 
-/// The refusal byte. A named parameter answering with it means "unavailable",
-/// not the value 255.
-const REFUSED: u8 = 0xFF;
-
 /// Shown before the device has been identified, and if its product string is
 /// missing. Deliberately generic rather than a guessed model number.
 const FALLBACK_NAME: &str = "Headset";
+
+/// Which of the panel's controls the connected headset has.
+///
+/// Comes from the device's codec, so a control is offered only where the
+/// research record has evidence for it. The default is the V3 Pro's set, which
+/// is what the panel showed before there was more than one device, and what it
+/// shows until a device is identified.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Features {
+    pub game_chat: bool,
+    pub noise: bool,
+    /// Whether the sidetone level can be read back after it is set. Where it
+    /// cannot, a written level is shown as sent, never as confirmed.
+    pub sidetone_readable: bool,
+}
+
+impl Default for Features {
+    fn default() -> Self {
+        Features {
+            game_chat: true,
+            noise: true,
+            sidetone_readable: true,
+        }
+    }
+}
+
+impl Features {
+    pub fn of(codec: &dyn Codec) -> Features {
+        Features {
+            game_chat: codec.is_writable(Param::GameChatBalance),
+            noise: codec.is_writable(Param::NoiseCancellation),
+            sidetone_readable: codec.is_readable(Param::Sidetone),
+        }
+    }
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HeadsetState {
     /// The HID product string, as reported by the device. Not a hardcoded model
     /// name: the mockups say "V2 Pro" but the hardware reports what it reports.
     pub device_name: Option<String>,
+    /// The model the device was identified as, for the tooltip. `None` until a
+    /// device resolves.
+    pub model: Option<&'static str>,
+    /// The controls the identified device has.
+    pub features: Features,
+    /// Set when `sidetone` holds a level this tray sent and the device
+    /// acknowledged, but which it has no observed way to read back.
+    pub sidetone_unconfirmed: bool,
     /// `None` until the link parameter has been read at least once.
     pub connected: Option<bool>,
     pub battery: Option<u8>,
@@ -63,6 +102,9 @@ impl HeadsetState {
     /// it was on.
     pub fn apply_device_snapshot(&mut self, from: &HeadsetState) {
         self.device_name = from.device_name.clone();
+        self.model = from.model;
+        self.features = from.features;
+        self.sidetone_unconfirmed = from.sidetone_unconfirmed;
         self.connected = from.connected;
         self.battery = from.battery;
         self.sidetone = from.sidetone;
@@ -93,11 +135,16 @@ impl HeadsetState {
 
     /// Display name for the header.
     ///
-    /// Strips the trailing " HID" the descriptor carries, which is an artefact
-    /// of the interface rather than part of the product's name.
+    /// Strips the trailing " HID" the V3 Pro's descriptor carries, which is an
+    /// artefact of the interface rather than part of the product's name, and
+    /// the leading "Razer " the V2 Pro's carries, which is the vendor and does
+    /// not fit the header beside the product's name.
     pub fn device_name(&self) -> String {
         match &self.device_name {
-            Some(n) => n.trim().trim_end_matches(" HID").trim().to_string(),
+            Some(n) => {
+                let n = n.trim().trim_end_matches(" HID").trim();
+                n.strip_prefix("Razer ").unwrap_or(n).trim().to_string()
+            }
             None => FALLBACK_NAME.to_string(),
         }
     }
@@ -112,6 +159,20 @@ impl HeadsetState {
         }
     }
 
+    /// Records that the headset is unreachable.
+    ///
+    /// A dropped link invalidates everything proxied through it. Leaving stale
+    /// numbers on screen would be worse than a gap.
+    pub fn mark_disconnected(&mut self) {
+        self.connected = Some(false);
+        self.battery = None;
+        self.sidetone = None;
+        self.sidetone_unconfirmed = false;
+        self.game_chat = None;
+        self.noise = None;
+        self.mic_mute_hardware = None;
+    }
+
     /// Folds one decoded frame into the state.
     ///
     /// Applies to responses and events alike: both carry the same parameter and
@@ -119,22 +180,25 @@ impl HeadsetState {
     /// is the protocol of the device the frame came from, which is what says
     /// which setting its identifier stands for.
     pub fn apply(&mut self, codec: &dyn Codec, frame: &ParamFrame) {
-        let value = frame.value().filter(|v| *v != REFUSED);
+        // A refusal means "unavailable", not a value: 255 is not a battery
+        // level. Which replies are refusals is the device's own convention.
+        let refused = codec
+            .param_for(frame.param)
+            .is_some_and(|p| codec.read_refused(p, frame));
+        let value = frame.value().filter(|_| !refused);
         match codec.param_for(frame.param) {
             Some(Param::LinkState) => {
-                self.connected = Some(frame.payload.first() == Some(&0x01));
-                // A dropped link invalidates everything proxied through it.
-                // Leaving stale numbers on screen would be worse than a gap.
-                if self.connected == Some(false) {
-                    self.battery = None;
-                    self.sidetone = None;
-                    self.game_chat = None;
-                    self.noise = None;
-                    self.mic_mute_hardware = None;
+                if frame.payload.first() == Some(&0x01) {
+                    self.connected = Some(true);
+                } else {
+                    self.mark_disconnected();
                 }
             }
             Some(Param::Battery) => self.battery = value,
-            Some(Param::Sidetone) => self.sidetone = value,
+            Some(Param::Sidetone) => {
+                self.sidetone = value;
+                self.sidetone_unconfirmed = false;
+            }
             Some(Param::GameChatBalance) => self.game_chat = value,
             Some(Param::MicMute) => self.mic_mute_hardware = value.map(|v| v != 0),
             // Both bytes or nothing: a refusal is one byte and decodes to
@@ -142,16 +206,24 @@ impl HeadsetState {
             Some(Param::NoiseCancellation) => {
                 self.noise = NoiseControl::from_payload(&frame.payload)
             }
-            // Parameters with no established meaning are ignored rather than
-            // guessed at. The tray shows only what the research record supports.
-            Some(Param::SliderFunction) | None => {}
+            // Parameters the panel has no control for, and those with no
+            // established meaning, are ignored rather than guessed at.
+            Some(
+                Param::SliderFunction
+                | Param::PowerSavingTimeout
+                | Param::DoNotDisturb
+                | Param::EqPreset
+                | Param::EqBank
+                | Param::MicEqMode,
+            )
+            | None => {}
         }
     }
 
     /// Tooltip text. Kept under the 127-character limit Windows imposes on
     /// `NOTIFYICONDATAW::szTip`.
     pub fn tooltip(&self) -> String {
-        let mut s = String::from("BlackShark V3 Pro");
+        let mut s = String::from(self.model.unwrap_or(FALLBACK_NAME));
         if self.dongle_silent {
             s.push_str(" - dongle not responding; unplug it and plug it back in");
             return s;
@@ -329,6 +401,11 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(s.device_name(), "BlackShark V3 Pro PS");
+        let v2 = HeadsetState {
+            device_name: Some("Razer BlackShark V2 Pro 2.4".into()),
+            ..HeadsetState::default()
+        };
+        assert_eq!(v2.device_name(), "BlackShark V2 Pro 2.4");
         assert_eq!(HeadsetState::default().device_name(), "Headset");
     }
 

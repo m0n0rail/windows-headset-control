@@ -224,7 +224,7 @@ fn run_explain_output() {
 #[cfg(windows)]
 fn run_render_panel() {
     use headset_protocol::v3pro::noise::{NoiseControl, NoiseMode};
-    use headset_tray::state::HeadsetState;
+    use headset_tray::state::{Features, HeadsetState};
     use headset_tray::ui::{self, layout::SliderParam, View};
     use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
 
@@ -246,6 +246,9 @@ fn run_render_panel() {
         mic_mute_os: Some(false),
         warn_vendor_software: true,
         dongle_silent: false,
+        model: Some("BlackShark V3 Pro"),
+        features: Features::default(),
+        sidetone_unconfirmed: false,
     };
 
     let mut cases: Vec<(&str, HeadsetState, View, SliderParam)> = Vec::new();
@@ -300,6 +303,9 @@ fn run_render_panel() {
         mic_mute_os: None,
         warn_vendor_software: false,
         dongle_silent: true,
+        model: base.model,
+        features: base.features,
+        sidetone_unconfirmed: false,
     };
     cases.push((
         "dongle-not-responding",
@@ -371,6 +377,32 @@ fn run_render_panel() {
         base.clone(),
         View::Settings,
         SliderParam::GameChat,
+    ));
+
+    // The V2 Pro: no game/chat balance and no noise control, and a sidetone
+    // level that can be sent but never read back.
+    let v2 = HeadsetState {
+        device_name: Some("Razer BlackShark V2 Pro 2.4".into()),
+        model: Some("BlackShark V2 Pro"),
+        features: Features {
+            game_chat: false,
+            noise: false,
+            sidetone_readable: false,
+        },
+        game_chat: None,
+        noise: None,
+        sidetone: None,
+        ..base.clone()
+    };
+    cases.push(("v2pro-main", v2.clone(), View::Main, SliderParam::Sidetone));
+    let mut v2_sent = v2.clone();
+    v2_sent.sidetone = Some(13);
+    v2_sent.sidetone_unconfirmed = true;
+    cases.push((
+        "v2pro-sidetone-sent",
+        v2_sent,
+        View::Main,
+        SliderParam::Sidetone,
     ));
 
     let mut off = base.clone();

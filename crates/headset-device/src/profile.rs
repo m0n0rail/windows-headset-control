@@ -7,10 +7,11 @@
 //! needs its own capture evidence in `docs/` — a profile is never added on the
 //! strength of another product's protocol.
 
+use headset_protocol::v2pro::V2_PRO;
 use headset_protocol::v3pro::V3_PRO;
 use headset_protocol::Codec;
 
-use crate::model::CollectionInfo;
+use crate::model::{CollectionInfo, WriteMethod};
 
 /// The descriptor shape a profile's protocol was derived from.
 ///
@@ -33,6 +34,9 @@ pub struct DeviceProfile {
     pub vendor_id: u16,
     pub product_id: u16,
     pub control: ControlShape,
+    /// How output reports reach the device, as the vendor software was observed
+    /// sending them.
+    pub write_method: WriteMethod,
     pub codec: &'static dyn Codec,
 }
 
@@ -43,6 +47,7 @@ impl std::fmt::Debug for DeviceProfile {
             .field("vendor_id", &format_args!("{:#06x}", self.vendor_id))
             .field("product_id", &format_args!("{:#06x}", self.product_id))
             .field("control", &self.control)
+            .field("write_method", &self.write_method)
             .field("codec", &self.codec.name())
             .finish()
     }
@@ -50,22 +55,40 @@ impl std::fmt::Debug for DeviceProfile {
 
 /// Every supported product.
 ///
-/// `0x101B` is the BlackShark V3 Pro. Do not add `0x0577` or any other id on
-/// the strength of public discussion: `docs/device-research.md` explicitly
-/// refutes that PID for this hardware.
-pub static PROFILES: &[DeviceProfile] = &[DeviceProfile {
-    name: "BlackShark V3 Pro",
-    vendor_id: 0x1532,
-    product_id: 0x101B,
-    // Measured with `HidP_GetCaps` on our own hardware; see the Verified
-    // Hardware Baseline in `docs/device-research.md`.
-    control: ControlShape {
-        usage_page: 0xFF14,
-        input_report_len: 64,
-        output_report_len: 64,
+/// Do not add `0x0577` or any other id on the strength of public discussion:
+/// `docs/device-research.md` explicitly refutes that PID for the V3 Pro, and
+/// each entry here stands on its own captures.
+pub static PROFILES: &[DeviceProfile] = &[
+    DeviceProfile {
+        name: "BlackShark V3 Pro",
+        vendor_id: 0x1532,
+        product_id: 0x101B,
+        // Measured with `HidP_GetCaps` on our own hardware; see the Verified
+        // Hardware Baseline in `docs/device-research.md`.
+        control: ControlShape {
+            usage_page: 0xFF14,
+            input_report_len: 64,
+            output_report_len: 64,
+        },
+        write_method: WriteMethod::SetOutputReport,
+        codec: &V3_PRO,
     },
-    codec: &V3_PRO,
-}];
+    DeviceProfile {
+        name: "BlackShark V2 Pro",
+        vendor_id: 0x1532,
+        product_id: 0x0555,
+        // Measured with `headsetctl inspect` on the contributor's hardware; see
+        // the Verified hardware baseline in
+        // `docs/device-research-blackshark-v2-pro.md`.
+        control: ControlShape {
+            usage_page: 0xFF00,
+            input_report_len: 64,
+            output_report_len: 64,
+        },
+        write_method: WriteMethod::InterruptOut,
+        codec: &V2_PRO,
+    },
+];
 
 /// The profile for the product `c` belongs to, if it is supported.
 pub fn profile_for(c: &CollectionInfo) -> Option<&'static DeviceProfile> {
@@ -94,21 +117,32 @@ mod tests {
     }
 
     #[test]
-    fn every_named_parameter_a_profile_maps_is_readable_on_it() {
-        // A mapping the allowlist would refuse is a parameter the codec claims
-        // and cannot reach -- a broken profile, not a missing feature.
+    fn every_named_parameter_a_profile_maps_was_observed_on_it() {
+        // A mapping no allowlist covers is a parameter the codec claims with
+        // no evidence of ever having seen -- a broken profile, not a missing
+        // feature. Read, written, or pushed by the device all count.
         for p in PROFILES {
             for param in Param::ALL {
                 if let Some(id) = p.codec.id(param) {
+                    let c = p.codec;
                     assert!(
-                        p.codec.read_allowlist().contains(&id),
-                        "{}: {} maps to {id:#04x}, which is not readable",
+                        c.read_allowlist().contains(&id)
+                            || c.write_allowlist().contains(&id)
+                            || c.event_only().contains(&id),
+                        "{}: {} maps to {id:#04x}, which was never observed",
                         p.name,
                         param.name()
                     );
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_v2_pro_writes_over_interrupt_out_and_the_v3_pro_does_not() {
+        let by_pid = |pid| PROFILES.iter().find(|p| p.product_id == pid).unwrap();
+        assert_eq!(by_pid(0x101B).write_method, WriteMethod::SetOutputReport);
+        assert_eq!(by_pid(0x0555).write_method, WriteMethod::InterruptOut);
     }
 
     #[test]
@@ -124,14 +158,19 @@ mod tests {
     }
 
     #[test]
-    fn the_v3_pro_is_the_only_supported_product() {
+    fn the_supported_products_are_pinned() {
         // Pinned so that adding a profile is a deliberate, reviewed change that
         // updates the README's compatibility table at the same time.
-        let ids: Vec<(u16, u16)> = PROFILES
+        let ids: Vec<(u16, u16, &str)> = PROFILES
             .iter()
-            .map(|p| (p.vendor_id, p.product_id))
+            .map(|p| (p.vendor_id, p.product_id, p.codec.name()))
             .collect();
-        assert_eq!(ids, vec![(0x1532, 0x101B)]);
-        assert_eq!(PROFILES[0].codec.name(), "blackshark-v3-pro");
+        assert_eq!(
+            ids,
+            vec![
+                (0x1532, 0x101B, "blackshark-v3-pro"),
+                (0x1532, 0x0555, "blackshark-v2-pro"),
+            ]
+        );
     }
 }

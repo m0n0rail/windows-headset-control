@@ -26,8 +26,8 @@ use windows::Win32::Foundation::{
     ERROR_NO_MORE_ITEMS, HANDLE, NTSTATUS, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows::Win32::Storage::FileSystem::{
-    CreateFileW, ReadFile, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_OVERLAPPED, FILE_GENERIC_READ,
-    FILE_GENERIC_WRITE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    CreateFileW, ReadFile, WriteFile, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_OVERLAPPED,
+    FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
 };
 use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
 use windows::Win32::System::IO::{CancelIo, GetOverlappedResult, OVERLAPPED};
@@ -369,6 +369,64 @@ pub fn write_output_report(handle: HANDLE, buf: &[u8]) -> Result<(), DeviceError
             Ok(())
         } else {
             Err(map_win_error(windows::core::Error::from_win32()))
+        }
+    }
+}
+
+/// Sends one output report with `WriteFile`: an interrupt OUT transfer.
+///
+/// The transfer the BlackShark V2 Pro's vendor software was observed using.
+/// The handle is overlapped, so the write is waited for with a bound and, if
+/// it does not finish, cancelled and drained before `buf` and the `OVERLAPPED`
+/// go out of scope -- the same discipline `read_with_timeout` documents.
+pub fn write_with_timeout(
+    handle: HANDLE,
+    buf: &[u8],
+    timeout: std::time::Duration,
+) -> Result<(), DeviceError> {
+    unsafe {
+        let event = CreateEventW(None, true, false, PCWSTR::null())
+            .map_err(|e| DeviceError::Os(e.to_string()))?;
+        let mut ov = OVERLAPPED {
+            hEvent: event,
+            ..Default::default()
+        };
+
+        let started = WriteFile(handle, Some(buf), None, Some(&mut ov));
+        if let Err(e) = started {
+            let code = e.code().0 as u32 & 0xFFFF;
+            if code != ERROR_IO_PENDING.0 {
+                let _ = CloseHandle(event);
+                return Err(map_win_error(e));
+            }
+            let ms = timeout.as_millis().min(u128::from(u32::MAX - 1)) as u32;
+            let wait = WaitForSingleObject(event, ms);
+            if wait != WAIT_OBJECT_0 {
+                let _ = CancelIo(handle);
+                let mut discarded: u32 = 0;
+                let _ = GetOverlappedResult(handle, &ov, &mut discarded, true);
+                let _ = CloseHandle(event);
+                return if wait == WAIT_TIMEOUT {
+                    Err(DeviceError::Timeout(timeout))
+                } else {
+                    Err(DeviceError::Os(format!(
+                        "WaitForSingleObject returned {:#010x}",
+                        wait.0
+                    )))
+                };
+            }
+        }
+
+        let mut transferred: u32 = 0;
+        let ok = GetOverlappedResult(handle, &ov, &mut transferred, false);
+        let _ = CloseHandle(event);
+        match ok {
+            Ok(()) if transferred as usize == buf.len() => Ok(()),
+            Ok(()) => Err(DeviceError::Os(format!(
+                "interrupt write sent {transferred} of {} bytes",
+                buf.len()
+            ))),
+            Err(e) => Err(map_win_error(e)),
         }
     }
 }

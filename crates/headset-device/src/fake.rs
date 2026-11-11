@@ -4,7 +4,7 @@ use serde::Deserialize;
 
 use crate::backend::{HidBackend, HidTransport};
 use crate::error::DeviceError;
-use crate::model::{CollectionInfo, DeviceId, OpenMode, ReportItem, ReportKind};
+use crate::model::{CollectionInfo, DeviceId, OpenMode, ReportItem, ReportKind, WriteMethod};
 
 #[derive(Deserialize)]
 struct FixtureRoot {
@@ -50,6 +50,8 @@ pub struct FakeHidBackend {
     /// Shared with every transport this backend hands out, so a test can assert
     /// on what reached the wire after the transport has been dropped.
     writes: WriteLog,
+    /// The write method of the most recent read-write open.
+    opened_with: std::sync::Arc<std::sync::Mutex<Option<WriteMethod>>>,
 }
 
 impl FakeHidBackend {
@@ -103,6 +105,7 @@ impl FakeHidBackend {
             collections,
             canned_reads: Vec::new(),
             writes: WriteLog::default(),
+            opened_with: Default::default(),
         })
     }
 
@@ -115,6 +118,11 @@ impl FakeHidBackend {
     }
 
     /// Every report written through a transport this backend handed out.
+    /// How the most recent read-write open asked for reports to be written.
+    pub fn write_method(&self) -> Option<WriteMethod> {
+        *self.opened_with.lock().expect("open log poisoned")
+    }
+
     pub fn writes(&self) -> Vec<Vec<u8>> {
         self.writes.lock().expect("writes log poisoned").clone()
     }
@@ -191,7 +199,10 @@ impl HidBackend for FakeHidBackend {
         if mode.performs_io() && c.is_audio_stack_collection() {
             return Err(DeviceError::RefusedAudioCollection);
         }
-        if mode == OpenMode::ReadWrite && c.output_report_len == 0 {
+        if let OpenMode::ReadWrite(method) = mode {
+            *self.opened_with.lock().expect("open log poisoned") = Some(method);
+        }
+        if matches!(mode, OpenMode::ReadWrite(_)) && c.output_report_len == 0 {
             return Err(DeviceError::UnexpectedControlShape(
                 "collection declares no output report".into(),
             ));
@@ -210,7 +221,7 @@ impl HidBackend for FakeHidBackend {
             // Mirrors the real backend: writability follows the access the
             // handle was opened with, so a test cannot write through a
             // read-only open any more than production code can.
-            writable: mode == OpenMode::ReadWrite,
+            writable: matches!(mode, OpenMode::ReadWrite(_)),
             reports,
             cursor: std::cell::Cell::new(0),
             writes: self.writes.clone(),
@@ -252,7 +263,9 @@ mod tests {
             .iter()
             .find(|c| c.is_audio_stack_collection())
             .expect("audio collection present");
-        let err = b.open(&audio.id, OpenMode::ReadWrite).unwrap_err();
+        let err = b
+            .open(&audio.id, OpenMode::ReadWrite(WriteMethod::SetOutputReport))
+            .unwrap_err();
         assert!(matches!(err, DeviceError::RefusedAudioCollection));
     }
 

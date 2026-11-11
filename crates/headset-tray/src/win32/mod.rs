@@ -330,7 +330,7 @@ pub fn run_ui_with<F: FnOnce(isize)>(
             hIcon: icon,
             ..Default::default()
         };
-        write_tip(&mut nid, "BlackShark V3 Pro - starting");
+        write_tip(&mut nid, "Headset - starting");
         if !add_icon(&mut nid) {
             return Err(windows::core::Error::from_win32());
         }
@@ -481,7 +481,7 @@ fn refresh_tray(ctx: &mut Ctx) {
         .state
         .lock()
         .map(|s| s.tooltip())
-        .unwrap_or_else(|_| "BlackShark V3 Pro".into());
+        .unwrap_or_else(|_| "Headset".into());
     write_tip(&mut ctx.nid, &tip);
     unsafe {
         let _ = Shell_NotifyIconW(NIM_MODIFY, &ctx.nid);
@@ -853,6 +853,11 @@ fn redraw_panel(ctx: &mut Ctx) {
     };
     let state = ctx.state.lock().map(|s| s.clone()).unwrap_or_default();
     let state = state.with_pending_noise(ctx.pending_noise);
+    // The slider a release commits is `ctx.param`, so it must agree with the one
+    // the panel draws. A device without a game/chat balance has only sidetone.
+    if !state.features.game_chat {
+        ctx.param = SliderParam::Sidetone;
+    }
     let preview = crate::ui::layout::slider_preview(ctx.param, ctx.drag, ctx.pending_slider);
     let panel = ui::build(&state, ctx.view, ctx.param, preview);
     ctx.scale = unsafe { dpi::window_scale(ctx.panel_hwnd) };
@@ -1148,6 +1153,10 @@ fn on_panel_drag(ctx: &mut Ctx, x: f32) {
 /// seconds behind the knob.
 fn on_panel_release(ctx: &mut Ctx) {
     let Some(v) = ctx.drag.take() else { return };
+    // Commit to the slider that was drawn, which is the one that was dragged.
+    if let Some(g) = ctx.track {
+        ctx.param = g.param;
+    }
     let cmd = match ctx.param {
         SliderParam::Sidetone => Command::SetSidetone(v),
         SliderParam::GameChat => Command::SetGameChat(v),

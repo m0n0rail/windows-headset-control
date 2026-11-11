@@ -57,18 +57,13 @@ fn probe_link(session: &mut ControlSession) -> Option<bool> {
         .map(|f| link_is_up(&f))
 }
 
-/// Whether a read came back refused.
-///
-/// The dongle answers a read of a headset-proxied parameter with the same
-/// `0xff` it uses to refuse a write when the headset is not reachable. Observed
-/// directly: with the headset powered off, `link` reported `00 00` while every
-/// other parameter returned a lone `0xff` in the same session.
+/// Whether a read came back refused, by the device's own observed convention.
 ///
 /// Only applied to named parameters. The raw `param get` path prints whatever
-/// byte arrived, because an unidentified parameter might legitimately hold
-/// `0xff` and this project does not guess.
-fn looks_refused(param: Param, frame: &ParamFrame) -> bool {
-    param != Param::LinkState && frame.value() == Some(0xFF)
+/// byte arrived, because an unidentified parameter might legitimately hold the
+/// same byte and this project does not guess.
+fn looks_refused(codec: &dyn Codec, param: Param, frame: &ParamFrame) -> bool {
+    codec.read_refused(param, frame)
 }
 
 /// `true` when the headset is reachable over the wireless link.
@@ -80,19 +75,32 @@ pub fn run_get(backend: &dyn HidBackend, args: &GetArgs, as_json: bool) -> Resul
     let param = lookup(&args.name)?;
     let mut session = ControlSession::open(backend)?;
     let id = id_on(&session, param)?;
+    if !session.codec().is_readable(param) {
+        bail!(
+            "`{}` was never observed being read on the {}: the vendor software only \
+             ever {} it, so there is no read to send",
+            param.name(),
+            session.profile().name,
+            if session.codec().is_writable(param) {
+                "wrote"
+            } else {
+                "received it as an event from"
+            }
+        );
+    }
     let request = session.codec().encode_read(id, None)?;
     let frame = session.exchange(&request, id, false)?;
 
     // Only pay for the extra exchange when something is actually wrong: a
     // healthy read costs one round trip, and the link is consulted purely to
     // explain a refusal.
-    let link_up = if looks_refused(param, &frame) {
+    let link_up = if looks_refused(session.codec(), param, &frame) {
         probe_link(&mut session)
     } else {
         None
     };
 
-    let refused = looks_refused(param, &frame);
+    let refused = looks_refused(session.codec(), param, &frame);
 
     Ok(if as_json {
         serde_json::to_string_pretty(&json!({
@@ -122,9 +130,8 @@ pub fn run_get(backend: &dyn HidBackend, args: &GetArgs, as_json: bool) -> Resul
         }
     } else {
         match frame.value() {
-            Some(v) => format!("{}: {v}\n", param.name()),
-            // Multi-byte parameters such as link state have no single value.
-            None if param == Param::LinkState => format!(
+            // Link state is words, whatever its width on the device.
+            _ if param == Param::LinkState => format!(
                 "{}: {}\n",
                 param.name(),
                 if link_is_up(&frame) {
@@ -133,6 +140,7 @@ pub fn run_get(backend: &dyn HidBackend, args: &GetArgs, as_json: bool) -> Resul
                     "not connected"
                 }
             ),
+            Some(v) => format!("{}: {v}\n", param.name()),
             None if param == Param::NoiseCancellation => {
                 match NoiseControl::from_payload(&frame.payload) {
                     Some(c) => format!("{}: {}\n", param.name(), c.describe()),
@@ -167,14 +175,24 @@ pub fn run_set(backend: &dyn HidBackend, args: &SetArgs, as_json: bool) -> Resul
             param.name()
         );
     }
-    if let Some((lo, hi)) = codec.range(param) {
-        if args.value < lo || args.value > hi {
-            bail!(
-                "{} accepts {lo}..={hi}; {} is outside the range observed on this hardware",
-                param.name(),
-                args.value
-            );
-        }
+    if !codec.standalone_write(param) {
+        bail!(
+            "`{}` was only ever written as one step of a longer sequence on the {}, \
+             so writing it on its own would send something never observed",
+            param.name(),
+            session.profile().name
+        );
+    }
+    if !codec.accepts(param, args.value) {
+        bail!(
+            "{} was never observed taking {} on this hardware{}",
+            param.name(),
+            args.value,
+            codec
+                .range(param)
+                .map(|(lo, hi)| format!("; it accepts {lo}..={hi}"))
+                .unwrap_or_default()
+        );
     }
 
     if let Some((pre_id, pre_value)) = codec.write_preamble(param) {
@@ -188,7 +206,32 @@ pub fn run_set(backend: &dyn HidBackend, args: &SetArgs, as_json: bool) -> Resul
     check_result(codec, &ack, param.name())?;
 
     // Device is the source of truth: a successful write is not evidence that
-    // the value changed. Read it back and report what the device actually holds.
+    // the value changed. Read it back and report what the device actually holds
+    // -- where a read was ever observed. Where none was, say so rather than
+    // inventing one or reporting the requested value as confirmed.
+    if !codec.is_readable(param) {
+        return Ok(if as_json {
+            serde_json::to_string_pretty(&json!({
+                "schema_version": SCHEMA_VERSION,
+                "parameter": param.name(),
+                "id": format!("{id:#04x}"),
+                "requested": args.value,
+                "readback": serde_json::Value::Null,
+                "applied": serde_json::Value::Null,
+                "verifiable": false,
+                "wrote_to_device": true,
+            }))
+            .expect("serialization cannot fail")
+        } else {
+            format!(
+                "{}: wrote {}; acknowledged, but the {} was never observed answering a read \
+                 of it, so the value is unconfirmed\n",
+                param.name(),
+                args.value,
+                session.profile().name
+            )
+        });
+    }
     let verify = codec.encode_read(id, None)?;
     let now = session.exchange(&verify, id, false)?;
     let readback = now.value();
@@ -201,6 +244,7 @@ pub fn run_set(backend: &dyn HidBackend, args: &SetArgs, as_json: bool) -> Resul
             "requested": args.value,
             "readback": readback,
             "applied": readback == Some(args.value),
+            "verifiable": true,
             "wrote_to_device": true,
         }))
         .expect("serialization cannot fail")

@@ -1,12 +1,14 @@
 # windows-headset-control
 
-Control your Razer BlackShark V3 Pro headset from the Windows tray, without running Synapse.
+Control your Razer BlackShark V3 Pro or V2 Pro headset from the Windows tray, without
+running Synapse.
 
 <img src="docs/images/panel.png" alt="The tray panel: battery, microphone state, game/chat balance, and noise control" width="342">
 
 Battery, microphone mute, sidetone, game/chat balance, and noise cancellation — in a panel
 that opens from the notification area and closes when you click away. It uses around 30 MB
-of memory and starts with Windows if you let it.
+of memory and starts with Windows if you let it. The panel shows only the controls your
+headset has.
 
 - Runs as a normal user. No administrator rights.
 - Installs no driver and no service.
@@ -15,13 +17,25 @@ of memory and starts with Windows if you let it.
 
 ## Will it work with my headset?
 
-**One model, and only one:**
+**Two models, and only these two** — each wireless, via its USB dongle:
 
-| | |
-| --- | --- |
-| Product | Razer BlackShark V3 Pro (wireless, via its USB dongle) |
-| USB vendor id | `0x1532` |
-| USB product id | `0x101B` |
+| Product | USB vendor id | USB product id | Research record |
+| --- | --- | --- | --- |
+| Razer BlackShark V3 Pro | `0x1532` | `0x101B` | [`device-research.md`](docs/device-research.md) |
+| Razer BlackShark V2 Pro | `0x1532` | `0x0555` | [`device-research-blackshark-v2-pro.md`](docs/device-research-blackshark-v2-pro.md) |
+
+They don't do the same things, and the tray and `headsetctl` offer each one only what it
+was observed doing:
+
+| | V3 Pro | V2 Pro |
+| --- | --- | --- |
+| Battery, link state, hardware mic mute | yes | yes |
+| Sidetone | set and read back | set; **cannot be read back** |
+| Game/chat balance, noise cancellation | yes | — |
+| Power-saving timeout, do not disturb, mic EQ mode | — | `headsetctl` only |
+
+On the V2 Pro, the headset never reports its sidetone level, so after you set one the
+panel shows it as `SENT` rather than as a confirmed value.
 
 Other products **are not supported**, including other BlackShark models. This talks to the
 headset in a language worked out by watching it, not from documentation, so a different
@@ -111,8 +125,9 @@ over all three.
 
 ## Good to know
 
-It's **alpha**. It works on the author's hardware and is covered by a few hundred tests,
-but it speaks a reconstructed protocol and has been used on exactly one headset.
+It's **alpha**. It works on its contributors' hardware and is covered by a few hundred
+tests, but it speaks a reconstructed protocol and has been used on one headset of each
+model.
 
 It sends vendor-specific commands to hardware. It performs no firmware access of any kind,
 and every command it can send was observed being sent by Razer's own software — but no
@@ -150,8 +165,11 @@ noise-cancellation: ambient (anc level 2)
 | `param get/set <id>` | yes, allowlisted identifiers only |
 
 `get` reports `unavailable` rather than a number when the headset refuses a read — which is
-what happens when it's switched off. `set` re-reads afterwards and tells you what the device
-actually holds, because a write being acknowledged is not evidence it took effect.
+what the V3 Pro does when it's switched off. (The V2 Pro's dongle doesn't answer at all
+while its headset is off, so there you get no response.) `set` re-reads afterwards and
+tells you what the device actually holds, because a write being acknowledged is not
+evidence it took effect. Where no read of a setting was ever observed, it says the value is
+unconfirmed instead.
 
 `list` enumerates every HID collection on the machine and names the best control candidate.
 `inspect` opens one with no I/O rights and prints its report descriptor. `probe` listens for

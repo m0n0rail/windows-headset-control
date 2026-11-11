@@ -112,7 +112,7 @@ impl ControlSession {
     /// Resolves the device and opens it for read and write.
     pub fn open(backend: &dyn HidBackend) -> Result<Self, DeviceError> {
         let ResolvedControl { info, profile } = resolve_control(backend)?;
-        let transport = backend.open(&info.id, OpenMode::ReadWrite)?;
+        let transport = backend.open(&info.id, OpenMode::ReadWrite(profile.write_method))?;
         Ok(Self {
             transport,
             info,
@@ -476,5 +476,105 @@ mod tests {
         );
         assert_eq!(events[0].param, param_id(Param::MicMute));
         assert_eq!(events[1].param, param_id(Param::Sidetone));
+    }
+
+    mod v2_pro {
+        use super::super::*;
+        use crate::fake::FakeHidBackend;
+        use crate::model::WriteMethod;
+        use headset_protocol::v2pro::V2_PRO;
+        use headset_protocol::{Codec, CONTROL_REPORT_LEN};
+
+        const FIXTURE: &str = include_str!("../tests/fixtures/blackshark-v2-pro.json");
+
+        /// One device message: marker, family 08, a sequence byte, four bytes
+        /// the device fills that are not decoded, and the body.
+        fn message(cmd: u8, role: u8, value: &[u8]) -> Vec<u8> {
+            let mut m = vec![0x50, 0x49, 0x08, 0xC0, 0x11, 0x22, 0x33, 0x00];
+            m.push(3 + value.len() as u8);
+            m.push(0x00);
+            m.extend([cmd, role, value.len() as u8]);
+            m.extend_from_slice(value);
+            m
+        }
+
+        fn report(messages: &[Vec<u8>]) -> Vec<u8> {
+            let body: Vec<u8> = messages.concat();
+            let mut r = vec![0u8; CONTROL_REPORT_LEN];
+            r[0] = 0x02;
+            r[1] = body.len() as u8;
+            r[2..2 + body.len()].copy_from_slice(&body);
+            r
+        }
+
+        #[test]
+        fn the_v2_pro_resolves_to_its_own_profile() {
+            let b = FakeHidBackend::from_fixture_str(FIXTURE).unwrap();
+            let r = resolve_control(&b).unwrap();
+            assert_eq!(r.info.usage_page, 0xFF00);
+            assert_eq!(r.info.collection_number, Some(2));
+            assert_eq!(r.profile.codec.name(), "blackshark-v2-pro");
+        }
+
+        #[test]
+        fn the_session_opens_for_interrupt_writes() {
+            let b = FakeHidBackend::from_fixture_str(FIXTURE).unwrap();
+            let _s = ControlSession::open(&b).unwrap();
+            assert_eq!(b.write_method(), Some(WriteMethod::InterruptOut));
+        }
+
+        #[test]
+        fn a_read_puts_the_captured_bytes_on_the_wire_and_returns_the_value() {
+            let mut b = FakeHidBackend::from_fixture_str(FIXTURE).unwrap();
+            let info = resolve_control_device(&b).unwrap();
+            b.push_read(&info.id, report(&[message(0x21, 0x01, &[0x37])]));
+
+            let mut s = ControlSession::open(&b).unwrap();
+            let req = s.codec().encode_read(0x21, None).unwrap();
+            let f = s.exchange(&req, 0x21, false).unwrap();
+            assert_eq!(f.value(), Some(0x37));
+            assert_eq!(
+                &b.writes()[0][..13],
+                &[0x02, 0x80, 0x08, 0x00, 0x00, 0x50, 0x41, 0x08, 0x00, 0x03, 0x21, 0x00, 0x00],
+                "S03: the battery read Synapse sent"
+            );
+        }
+
+        #[test]
+        fn an_event_sharing_a_report_with_the_response_is_not_lost() {
+            let mut b = FakeHidBackend::from_fixture_str(FIXTURE).unwrap();
+            let info = resolve_control_device(&b).unwrap();
+            b.push_read(
+                &info.id,
+                report(&[message(0x55, 0x02, &[0x01]), message(0x27, 0x01, &[0x00])]),
+            );
+
+            let mut s = ControlSession::open(&b).unwrap();
+            let req = V2_PRO.encode_read(0x27, None).unwrap();
+            let f = s.exchange(&req, 0x27, false).unwrap();
+            assert_eq!(f.value(), Some(0x00));
+            let events = s.drain_events();
+            assert_eq!(events.len(), 1, "the mute event came in the same report");
+            assert_eq!((events[0].param, events[0].value()), (0x55, Some(0x01)));
+        }
+
+        #[test]
+        fn a_write_is_answered_by_the_echoed_command() {
+            let mut b = FakeHidBackend::from_fixture_str(FIXTURE).unwrap();
+            let info = resolve_control_device(&b).unwrap();
+            // A read reply for the same parameter first: it must not satisfy
+            // the write.
+            b.push_read(&info.id, report(&[message(0x2C, 0x01, &[0x0F])]));
+            b.push_read(&info.id, report(&[message(0xAC, 0x01, &[0x00])]));
+
+            let mut s = ControlSession::open(&b).unwrap();
+            let req = V2_PRO.encode_write(0x2C, &[0x0F]).unwrap();
+            let ack = s.exchange(&req, 0x2C, true).unwrap();
+            assert!(ack.is_write);
+            assert_eq!(
+                V2_PRO.write_result(&ack),
+                Some(headset_protocol::ResultCode::Ok)
+            );
+        }
     }
 }

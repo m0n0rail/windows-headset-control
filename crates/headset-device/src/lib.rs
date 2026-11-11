@@ -14,7 +14,7 @@ pub mod windows;
 pub use backend::{HidBackend, HidTransport};
 pub use error::DeviceError;
 pub use fake::FakeHidBackend;
-pub use model::{CollectionInfo, DeviceId, OpenMode, ReportItem, ReportKind};
+pub use model::{CollectionInfo, DeviceId, OpenMode, ReportItem, ReportKind, WriteMethod};
 pub use profile::{profile_for, ControlShape, DeviceProfile, PROFILES};
 pub use select::{
     has_unambiguous_winner, is_supported_device, rank_candidates, stable_sort_collections,
