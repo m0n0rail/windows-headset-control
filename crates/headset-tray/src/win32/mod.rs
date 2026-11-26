@@ -530,24 +530,29 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 // Replaces WM_RBUTTONUP under version 4, and is also what the
                 // Menu key and Shift+F10 produce on a focused icon. The classic
                 // menu is where Exit lives: the panel design has no room for it.
+                // Not through `with_ctx`: `TrackPopupMenu` runs a modal loop
+                // that dispatches WM_STATE, WM_TIMER and WM_DESTROY while the
+                // menu is open, and those must be able to borrow the context.
+                // Holding it here made them panic, which aborts the process.
                 WM_CONTEXTMENU => {
-                    with_ctx(|ctx| show_menu(hwnd, ctx));
+                    show_menu(hwnd);
                 }
                 _ => {}
             }
             LRESULT(0)
         }
         WM_STATE => {
-            CTX.with(|c| {
-                if let Some(ctx) = c.borrow_mut().as_mut() {
-                    // The device has spoken; stop showing what was asked for.
-                    ctx.pending_noise = None;
-                    ctx.pending_slider = None;
-                    note_link_change(hwnd, ctx);
-                    refresh_tray(ctx);
-                    if ctx.panel_visible {
-                        redraw_panel(ctx);
-                    }
+            // Through `with_ctx`, like every other handler: a borrow that is
+            // already held means a re-entrant dispatch, and with `panic =
+            // "abort"` a plain `borrow_mut` there would end the process.
+            with_ctx(|ctx| {
+                // The device has spoken; stop showing what was asked for.
+                ctx.pending_noise = None;
+                ctx.pending_slider = None;
+                note_link_change(hwnd, ctx);
+                refresh_tray(ctx);
+                if ctx.panel_visible {
+                    redraw_panel(ctx);
                 }
             });
             LRESULT(0)
@@ -591,7 +596,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         // process with an orphaned window that ignores every click.
         WM_DESTROY if panel::tag(hwnd) != panel::TAG_PANEL => {
             CTX.with(|c| {
-                if let Some(ctx) = c.borrow_mut().take() {
+                // `try_borrow_mut` for the same reason as WM_STATE. If the
+                // context is somehow held, quitting without the cleanup is
+                // still better than aborting.
+                let Ok(mut guard) = c.try_borrow_mut() else {
+                    tracing::debug!("WM_DESTROY arrived while the context was borrowed");
+                    return;
+                };
+                if let Some(ctx) = guard.take() {
                     let _ = Shell_NotifyIconW(NIM_DELETE, &ctx.nid);
                     let _ = DestroyIcon(ctx.icon);
                     let _ = ctx.commands.send(Command::Shutdown);
@@ -1245,7 +1257,7 @@ fn wide(s: &str) -> Vec<u16> {
 /// Deliberately minimal: everything about the headset lives in the panel now.
 /// This exists because the panel design has nowhere sensible to put Exit, and a
 /// tray icon with no way to quit is hostile.
-unsafe fn show_menu(hwnd: HWND, ctx: &Ctx) {
+unsafe fn show_menu(hwnd: HWND) {
     let Ok(menu) = CreatePopupMenu() else { return };
     let _ = AppendMenuW(
         menu,
@@ -1270,7 +1282,6 @@ unsafe fn show_menu(hwnd: HWND, ctx: &Ctx) {
         None,
     );
     let _ = DestroyMenu(menu);
-    let _ = ctx;
 }
 
 unsafe fn build_icon() -> windows::core::Result<HICON> {

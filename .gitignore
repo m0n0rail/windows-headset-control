@@ -11,3 +11,9 @@ signing.env
 
 # Local build/release output
 /dist/
+
+# Device research. Captures and decoded dumps contain the headset serial in the
+# USB string descriptors and in replies; they must never be committed.
+/research-local/
+*.pcap
+*.pcapng

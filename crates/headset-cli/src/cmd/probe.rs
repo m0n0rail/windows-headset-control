@@ -207,10 +207,15 @@ fn render_json(
                 .iter()
                 .map(|(name, value)| ((*name).to_string(), json!(value)))
                 .collect();
+            // The raw payload is device data whose meaning is unknown, and a
+            // report's unused tail repeats earlier reports -- on the V2 Pro that
+            // can include the serial Synapse read. It is shown only on request,
+            // like the device path.
             json!({
                 "status": "frame_received",
                 "bytes": bytes,
-                "payload_hex": hex,
+                "payload_hex": r.include_sensitive().then_some(hex),
+                "payload_redacted": !r.include_sensitive(),
                 "interpreted_fields": interpreted,
                 "note": "no payload semantics are established for this hardware"
             })
@@ -271,7 +276,14 @@ fn render_human(
     match outcome {
         Outcome::Frame { bytes, hex, .. } => {
             let _ = writeln!(s, "result          : received {bytes} bytes");
-            let _ = writeln!(s, "payload         : {hex}");
+            if r.include_sensitive() {
+                let _ = writeln!(s, "payload         : {hex}");
+            } else {
+                let _ = writeln!(
+                    s,
+                    "payload         : <redacted; pass --include-sensitive to show the raw bytes>"
+                );
+            }
             let _ = writeln!(
                 s,
                 "interpretation  : none - no payload semantics established"

@@ -164,14 +164,41 @@ fn probe_parses_a_queued_control_frame() {
     backend.push_read(&control.id, report);
 
     let args = no_candidate(100);
-    let out = probe::run(&backend, &args, &Redactor::new(false), true).unwrap();
+    let out = probe::run(&backend, &args, &Redactor::new(true), true).unwrap();
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(v["result"]["status"], "frame_received");
     assert!(v["result"]["payload_hex"]
         .as_str()
         .unwrap()
         .starts_with("de ad"));
+    assert_eq!(v["result"]["payload_redacted"], false);
     assert_eq!(v["result"]["interpreted_fields"], serde_json::json!({}));
+}
+
+#[test]
+fn probe_redacts_the_raw_payload_by_default() {
+    // A report's unused tail can repeat an earlier report, including the
+    // serial, so the bytes are shown only with --include-sensitive.
+    let mut backend = FakeHidBackend::from_fixture_str(FIXTURE).unwrap();
+    let all = backend.enumerate().unwrap();
+    let control = all.iter().find(|c| c.usage_page == 0xFF14).unwrap();
+    let mut report = vec![0u8; 64];
+    report[0] = 0x02;
+    report[1] = 0xDE;
+    report[2] = 0xAD;
+    backend.push_read(&control.id, report.clone());
+    backend.push_read(&control.id, report);
+
+    let args = no_candidate(100);
+    let out = probe::run(&backend, &args, &Redactor::new(false), true).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["result"]["status"], "frame_received");
+    assert!(v["result"]["payload_hex"].is_null());
+    assert_eq!(v["result"]["payload_redacted"], true);
+
+    let out = probe::run(&backend, &args, &Redactor::new(false), false).unwrap();
+    assert!(!out.contains("de ad"), "{out}");
+    assert!(out.contains("--include-sensitive"), "{out}");
 }
 
 #[test]

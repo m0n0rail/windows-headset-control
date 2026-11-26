@@ -34,6 +34,14 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- **The tray no longer quits while its right-click menu is open.** The menu held the tray's
+  state while Windows ran the menu's own message loop, so a state update arriving meanwhile
+  (every few seconds with the dongle unplugged), or a close request, aborted the process.
+- **Published binaries no longer contain the builder's Windows account name.** Dependency
+  source paths under the user profile are rewritten to `~` by `build-installer.ps1`, which
+  also builds with `--locked` now.
+- **`headsetctl probe` hides the raw report bytes unless `--include-sensitive` is given.**
+  A report's unused tail repeats earlier reports, which can include the device serial.
 - **The Windows microphone mute is read at startup again.** It was read before the UI thread
   had initialised COM, so the read failed every time and the mute pill stayed unknown until
   a headset event filled it in. On the V3 Pro the startup read of the hardware switch hid
