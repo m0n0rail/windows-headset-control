@@ -63,6 +63,10 @@ evidence:
   confirmed on the V2 Pro by its own isolated session before being named.
 - The role byte convention (`01` reply, `02` event). Confirmed on this device by a power-off event.
 
+A follow-up on 2026-11-11 (sessions 24–26) established that the dongle needs Synapse's `e1` request
+before it answers. That too came only from capturing Synapse on the contributor's own hardware. No
+reference material was consulted, and the request is sent exactly as captured.
+
 ## Independence affirmation
 
 All code in `crates/` was written from the specification in

@@ -37,6 +37,10 @@ was observed doing:
 On the V2 Pro, the headset never reports its sidetone level, so after you set one the
 panel shows it as `SENT` rather than as a confirmed value.
 
+Neither model needs Synapse to be installed or running. The V2 Pro's dongle stays silent
+until it has seen the request Synapse opens with, so the tray and `headsetctl` send that
+same request, byte for byte, whenever they connect.
+
 Other products **are not supported**, including other BlackShark models. This talks to the
 headset in a language worked out by watching it, not from documentation, so a different
 product id is a different device until somebody does that work again.
@@ -49,6 +53,9 @@ prints nothing, this can't talk to your headset.
 **[Download the latest release](https://github.com/cunningorb/windows-headset-control/releases/latest)**
 and run the setup executable. It installs for you only, adds a Start menu entry, and offers
 to start with Windows.
+
+**V2 Pro support isn't in a published release yet.** Until it is, build the installer
+from source (see [Building from source](#building-from-source)).
 
 **Windows will warn you.** The installer isn't code-signed, so SmartScreen shows "Windows
 protected your PC". Choose **More info**, then **Run anyway**.
@@ -69,6 +76,10 @@ drives; drag it and let go, and the change is sent once.
 
 **Noise control** is off, ANC, or ambient.
 
+On the V2 Pro the panel has battery, microphone and sidetone only: the headset has no
+game/chat balance or noise control. Its other settings (power saving, do not disturb, mic
+EQ mode) are in `headsetctl`.
+
 <img src="docs/images/panel-noise.png" alt="Ambient mode selected, with the ANC level retained" width="342">
 
 ANC has four levels. Ambient has none — so the level track goes quiet in that mode, but
@@ -77,7 +88,8 @@ keeps showing where ANC will land when you switch back, because the headset reme
 **Nothing on screen is a guess.** A value the headset refuses shows as `--`, never as a
 number. Losing the wireless link clears the readings rather than leaving stale ones up. And
 after every change, the tray asks the headset what it actually holds — so if it disagrees
-with what you asked for, you see the truth.
+with what you asked for, you see the truth. Where the headset can't be asked, as with the
+V2 Pro's sidetone, the value is marked `SENT` rather than shown as confirmed.
 
 Right-click the icon for Refresh and Exit. The gear opens settings: start with Windows, and
 whether to warn you when Synapse is running (it can fight this app for the same settings).
@@ -136,7 +148,9 @@ warranty is offered. Running it may void your hardware warranty.
 Some things you might expect are **not** here, because they aren't the headset's to
 control: volume and software mic mute are handled by Windows, and Synapse's audio
 enhancements (bass boost, voice clarity, and so on) are processed on your PC by THX rather
-than on the headset. There is nothing for this app to send.
+than on the headset. There is nothing for this app to send. So with Synapse closed your
+headset may sound different, or quieter, than it does with Synapse running: that
+processing simply isn't happening.
 
 ## Command line
 
@@ -154,6 +168,8 @@ noise-cancellation: anc level 4
 noise-cancellation: anc level 2
 > headsetctl noise --mode ambient   # ambient has no level; the ANC level is retained
 noise-cancellation: ambient (anc level 2)
+> headsetctl set power-saving 30    # V2 Pro: off (0) or 15–60 minutes
+power-saving: 30
 ```
 
 | Command | Writes to the device |
@@ -184,13 +200,15 @@ only speaks when something changes.
 ## How it works
 
 The headset speaks a proprietary HID protocol with no public documentation. This project
-worked it out by capturing Razer's own software driving the hardware, and
-[`docs/device-research.md`](docs/device-research.md) records the evidence for every byte:
-what was sent, what came back, under what conditions.
+worked it out by capturing Razer's own software driving the hardware.
+[`docs/device-research.md`](docs/device-research.md) (V3 Pro) and
+[`docs/device-research-blackshark-v2-pro.md`](docs/device-research-blackshark-v2-pro.md)
+record the evidence for every byte: what was sent, what came back, under what conditions.
+The two models share no assumptions; each was worked out from its own captures.
 
 **The project can only send identifiers it has actually seen on the wire.** They live in
 allowlists in `headset-protocol`, which cannot encode anything else — so a guessed or
-brute-forced command has no path to your device from anywhere in the codebase. Ten observed
+brute-forced command has no path to your device from anywhere in the codebase. Observed
 parameters whose meaning was never established stay deliberately unnamed rather than being
 given plausible-sounding labels.
 

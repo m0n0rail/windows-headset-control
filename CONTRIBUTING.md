@@ -1,17 +1,20 @@
 # Contributing
 
-Thanks for looking. This is a small, opinionated project: it talks to one headset over a
-protocol reconstructed by observation, and most of its rules exist to keep that honest.
+Thanks for looking. This is a small, opinionated project: it talks to two headsets over
+protocols reconstructed by observation, and most of its rules exist to keep that honest.
 
 ## Before you start
 
 **Read [`docs/device-research.md`](docs/device-research.md).** It is the record of what was
 observed on the wire and what deliberately remains unnamed. Nearly every rule below follows
-from it.
+from it. [`docs/device-research-blackshark-v2-pro.md`](docs/device-research-blackshark-v2-pro.md)
+is the same record for the second device, and shows what adding one takes.
 
 If you are proposing support for a **different device**, open an issue first. It is not a
 small change: it needs its own capture evidence, and the answer to "does the protocol carry
-over?" is not assumed to be yes.
+over?" is not assumed to be yes. A device is added as a profile in
+`crates/headset-device/src/profile.rs` and, where its protocol differs, a codec module in
+`headset-protocol`; see [`docs/architecture.md`](docs/architecture.md).
 
 ## Building
 

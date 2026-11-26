@@ -73,7 +73,10 @@ any write preamble the vendor software was observed sending, and parses one inpu
 into the `ParamFrame`s it carries — zero or one for the V3 Pro, several for the V2 Pro. It
 also says which named parameters can be read (some were only ever written or only ever
 pushed), which values are accepted, which reply means "refused", and whether the dongle
-answers the link read on its own. A device with no evidence
+answers the link read on its own. Where the vendor software was observed opening with a request
+the device needs before it answers anything — the V2 Pro's dongle, which stays silent until
+it has seen Synapse's `e1` request — the codec returns that report from `session_open`, and a
+read-write `ControlSession` sends it once, unchanged, when it opens. A device with no evidence
 for a parameter does not map it, which is how "this device has no such setting" is
 expressed; nothing reaches an identifier by assuming two devices share one.
 
@@ -141,8 +144,9 @@ access and needs none.
 
 `unsafe` is confined to the workspace's two Win32 areas:
 
-- `crates/headset-device/src/windows/ffi.rs` — raw SetupAPI and `hid.dll`, including
-  `HidD_SetOutputReport` for the write path.
+- `crates/headset-device/src/windows/ffi.rs` — raw SetupAPI and `hid.dll`, including the
+  two write paths: `HidD_SetOutputReport` (V3 Pro) and overlapped `WriteFile` with a timeout
+  (V2 Pro).
 - `crates/headset-tray/src/win32/` — the notification icon, popup menus, message loop,
   process check, and Core Audio. Within it, `audio.rs` is the only place in the workspace
   that calls an interface Windows does not document; it is set apart precisely so that

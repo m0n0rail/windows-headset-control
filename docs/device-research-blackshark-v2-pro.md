@@ -17,8 +17,9 @@ below was established by a session on *this* device that isolated it, never by a
   and decoded with TShark 4.6.9. Isochronous audio and standard descriptor requests were dropped
   before analysis.
 - Driver of the traffic: Razer Synapse 4.0.896, which the contributor is licensed to run. Nothing
-  was sent to the device by this project during the research.
-- 23 capture sessions on 2026-11-10 and 11, each isolating one action (see [Session ledger](#session-ledger)).
+  was sent to the device by this project during the capture sessions. The project's own frames
+  were sent only afterwards, to verify the implementation, and are recorded where that happens.
+- 26 capture sessions on 2026-11-10 and 11, each isolating one action (see [Session ledger](#session-ledger)).
 - No third-party source, command table or documentation was consulted for this device. See
   [`clean-room-notes.md`](clean-room-notes.md).
 
@@ -89,8 +90,10 @@ XOR does not apply: byte 62 was `00` in every one of the 139 host frames of sess
 content.
 
 A second host family, `0E` (`50 41 0e 00 02 e1 01`), was sent before or after nearly every
-parameter request. Its meaning is not established and it is not needed to read or write any
-parameter below.
+parameter request. Its meaning is not established, but **a freshly plugged-in dongle answers
+nothing except the link read until it has seen one**. After that, no further `e1` is needed to
+read or write any parameter below. See
+[the `e1` section](#the-dongle-forwards-only-after-an-e1-request-2026-11-11).
 
 ### Device → host
 
