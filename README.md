@@ -57,7 +57,7 @@ and offers to start with Windows.
 | Headset | Release |
 | --- | --- |
 | V3 Pro | **[Latest upstream release](https://github.com/cunningorb/windows-headset-control/releases/latest)** |
-| V2 Pro | **[v0.2.0-alpha.4-v2pro.1](https://github.com/m0n0rail/windows-headset-control/releases/tag/v0.2.0-alpha.4-v2pro.1)**, a pre-release from the fork that added it; it supports the V3 Pro too |
+| V2 Pro | **[v0.2.0-alpha.4-v2pro.2](https://github.com/m0n0rail/windows-headset-control/releases/tag/v0.2.0-alpha.4-v2pro.2)**, a pre-release from the fork that added it; it supports the V3 Pro too |
 
 V2 Pro support is not in an upstream release yet. You can also build from source (see
 [Building from source](#building-from-source)).
