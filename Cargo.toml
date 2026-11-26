@@ -8,7 +8,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.0-alpha.4"
+version = "0.2.0-alpha.4-v2pro.1"
 edition = "2021"
 # Matches the toolchain pinned in rust-toolchain.toml, which is what CI builds
 # and tests with. Not an independently verified floor: no job builds against an
