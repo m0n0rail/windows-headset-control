@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0-alpha.4-v2pro.2] - 2026-11-26
+
+A release of the fork `m0n0rail/windows-headset-control`, built on upstream 0.2.0-alpha.4.
+It adds the Razer BlackShark V2 Pro and replaces 0.2.0-alpha.4-v2pro.1, which has been
+withdrawn: its binaries contained the builder's Windows account name, and its tray could
+quit while the right-click menu was open. It is not an upstream release.
+
 ### Added
 
 - **Razer BlackShark V2 Pro (`0x1532` / `0x0555`) support.** Its protocol was established

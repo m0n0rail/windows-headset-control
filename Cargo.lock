@@ -220,7 +220,7 @@ dependencies = [
 
 [[package]]
 name = "headset-cli"
-version = "0.2.0-alpha.4"
+version = "0.2.0-alpha.4-v2pro.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -235,7 +235,7 @@ dependencies = [
 
 [[package]]
 name = "headset-device"
-version = "0.2.0-alpha.4"
+version = "0.2.0-alpha.4-v2pro.2"
 dependencies = [
  "headset-protocol",
  "serde",
@@ -247,7 +247,7 @@ dependencies = [
 
 [[package]]
 name = "headset-protocol"
-version = "0.2.0-alpha.4"
+version = "0.2.0-alpha.4-v2pro.2"
 dependencies = [
  "serde",
  "thiserror",
@@ -255,7 +255,7 @@ dependencies = [
 
 [[package]]
 name = "headset-tray"
-version = "0.2.0-alpha.4"
+version = "0.2.0-alpha.4-v2pro.2"
 dependencies = [
  "headset-device",
  "headset-protocol",
