@@ -3,12 +3,12 @@
 Control your Razer BlackShark V3 Pro or V2 Pro headset from the Windows tray, without
 running Synapse.
 
-<img src="docs/images/panel.png" alt="The tray panel: battery, microphone state, game/chat balance, and noise control" width="342">
+<img src="docs/images/panel.png" alt="The tray panel for the BlackShark V3 Pro: battery, microphone state, game/chat balance, and noise control" width="300"> <img src="docs/images/panel-v2pro.png" alt="The tray panel for the BlackShark V2 Pro: battery, microphone state, and sidetone marked as sent" width="300">
 
-Battery, microphone mute, sidetone, game/chat balance, and noise cancellation — in a panel
-that opens from the notification area and closes when you click away. It uses around 30 MB
-of memory and starts with Windows if you let it. The panel shows only the controls your
-headset has.
+Battery, microphone mute and sidetone on both headsets, plus game/chat balance and noise
+cancellation on the V3 Pro, in a panel that opens from the notification area and closes when
+you click away. The panel shows only the controls your headset has. It uses around 30 MB of
+memory and starts with Windows if you let it.
 
 - Runs as a normal user. No administrator rights.
 - Installs no driver and no service.
@@ -34,12 +34,13 @@ was observed doing:
 | Game/chat balance, noise cancellation | yes | — |
 | Power-saving timeout, do not disturb, mic EQ mode | — | `headsetctl` only |
 
-On the V2 Pro, the headset never reports its sidetone level, so after you set one the
-panel shows it as `SENT` rather than as a confirmed value.
-
 Neither model needs Synapse to be installed or running. The V2 Pro's dongle stays silent
 until it has seen the request Synapse opens with, so the tray and `headsetctl` send that
 same request, byte for byte, whenever they connect.
+
+They also look different to Windows. The V3 Pro's dongle presents two playback devices, a
+game channel and a chat channel. The V2 Pro's presents one, plus its microphone, both
+named **Wireless Headset**.
 
 Other products **are not supported**, including other BlackShark models. This talks to the
 headset in a language worked out by watching it, not from documentation, so a different
@@ -50,12 +51,16 @@ prints nothing, this can't talk to your headset.
 
 ## Install
 
-**[Download the latest release](https://github.com/cunningorb/windows-headset-control/releases/latest)**
-and run the setup executable. It installs for you only, adds a Start menu entry, and offers
-to start with Windows.
+Download the setup executable and run it. It installs for you only, adds a Start menu entry,
+and offers to start with Windows.
 
-**V2 Pro support isn't in a published release yet.** Until it is, build the installer
-from source (see [Building from source](#building-from-source)).
+| Headset | Release |
+| --- | --- |
+| V3 Pro | **[Latest upstream release](https://github.com/cunningorb/windows-headset-control/releases/latest)** |
+| V2 Pro | **[v0.2.0-alpha.4-v2pro.1](https://github.com/m0n0rail/windows-headset-control/releases/tag/v0.2.0-alpha.4-v2pro.1)**, a pre-release from the fork that added it; it supports the V3 Pro too |
+
+V2 Pro support is not in an upstream release yet. You can also build from source (see
+[Building from source](#building-from-source)).
 
 **Windows will warn you.** The installer isn't code-signed, so SmartScreen shows "Windows
 protected your PC". Choose **More info**, then **Run anyway**.
@@ -70,20 +75,22 @@ Click the tray icon to open the panel.
 headset's own switch or Windows is muting you, because either one silences you — clicking
 it toggles the Windows side, since no software can move a physical switch.
 
-**Sidetone** (0–15) is how much of your own voice you hear. **Game/chat balance** (0–20)
-mixes the two audio channels the headset presents. The button switches which one the slider
-drives; drag it and let go, and the change is sent once.
+**Sidetone** (0–15) is how much of your own voice you hear. Drag the slider and let go, and
+the change is sent once.
 
-**Noise control** is off, ANC, or ambient.
+On the **V3 Pro**, the same slider also drives **game/chat balance** (0–20), which mixes the
+headset's two audio channels; the button above it switches between the two. **Noise control**
+is off, ANC, or ambient.
 
-On the V2 Pro the panel has battery, microphone and sidetone only: the headset has no
-game/chat balance or noise control. Its other settings (power saving, do not disturb, mic
-EQ mode) are in `headsetctl`.
-
-<img src="docs/images/panel-noise.png" alt="Ambient mode selected, with the ANC level retained" width="342">
+<img src="docs/images/panel-noise.png" alt="Ambient mode selected, with the ANC level retained" width="300">
 
 ANC has four levels. Ambient has none — so the level track goes quiet in that mode, but
 keeps showing where ANC will land when you switch back, because the headset remembers.
+
+On the **V2 Pro**, the slider is sidetone only. The headset has no game/chat balance and no
+noise control, and it never reports its sidetone level, so after you set one the panel shows
+it as `SENT`. Its other settings (power saving, do not disturb, mic EQ mode) are in
+`headsetctl`.
 
 **Nothing on screen is a guess.** A value the headset refuses shows as `--`, never as a
 number. Losing the wireless link clears the readings rather than leaving stale ones up. And
@@ -104,8 +111,8 @@ The headset reports that its link dropped, not *why*, so an auto-sleep or walkin
 range looks the same and will also move your sound. Brief dropouts won't: nothing moves
 until the link has held its new state for a couple of seconds.
 
-It puts you back exactly where you were, not on a guess — the dongle presents two
-playback devices (Game and Chat) and only you know which one you were using. If the tray
+It puts you back exactly where you were, not on a guess. The V3 Pro's dongle presents two
+playback devices (Game and Chat), and only you know which one you were using. If the tray
 is closed or restarted while your headset is off, it still remembers what it owes you.
 
 Windows offers no supported way for a program to change the default playback device, so
@@ -124,12 +131,13 @@ headset-tray.exe --explain-output
 
 It only reads; it won't move anything.
 
-**Split game and chat** is a separate switch, off by default. The headset shows up in
-Windows as two playback devices — a game channel and a chat channel — and Windows keeps a
+**Split game and chat** is a separate switch, off by default, for the V3 Pro. That headset
+shows up in Windows as two playback devices — a game channel and a chat channel — and Windows keeps a
 separate default for calls, so the two are there to be used for different things. Turn it
 on, pick a **Game channel** and a **Chat channel**, and whenever the headset powers on your
 ordinary sound goes to the first and your calls to the second. Leave it off and the tray
-won't touch which device your calls use.
+won't touch which device your calls use. The V2 Pro has a single playback device, so
+there is nothing to split.
 
 The panel **follows your Windows light or dark setting** by default. **Appearance** in
 settings overrides that — auto, dark, or light. If you use Windows high contrast, it wins
@@ -162,7 +170,7 @@ processing simply isn't happening.
 battery: 49
 > headsetctl set sidetone 7
 sidetone: 7
-> headsetctl noise
+> headsetctl noise                  # V3 Pro
 noise-cancellation: anc level 4
 > headsetctl noise --level 2        # keeps the current mode
 noise-cancellation: anc level 2
@@ -171,6 +179,17 @@ noise-cancellation: ambient (anc level 2)
 > headsetctl set power-saving 30    # V2 Pro: off (0) or 15–60 minutes
 power-saving: 30
 ```
+
+Which names `get` and `set` accept depends on the headset:
+
+| | Names |
+| --- | --- |
+| Both | `link`, `battery`, `sidetone` (set only on the V2 Pro), `mic-mute` (read on the V3 Pro; reported as an event on the V2 Pro) |
+| V3 Pro | `game-chat`, `slider-function`, `noise-cancellation` (and the `noise` command) |
+| V2 Pro | `power-saving` (0 = off, or 15–60 minutes), `do-not-disturb`, `mic-eq`; `eq-preset` and `eq-bank` can be read but not set |
+
+Asking for a name the connected headset doesn't have is refused with a message saying so,
+and no request for it is sent.
 
 | Command | Writes to the device |
 | --- | --- |
